@@ -1,0 +1,16 @@
+name: invalid-blocks sanity-check
+
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  sanity-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: sanity check
+        run: python ci/sanity-check.py
