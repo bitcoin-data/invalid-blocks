@@ -67,7 +67,7 @@ class PrevoutChecks(unittest.TestCase):
             load_previous(txs, self.cache, fetch=True)
 
     def test_confirmation_status_is_not_proof_when_unconfirmed_or_corrupt(self):
-        """Cache a confirmed height/hash, ignore unconfirmed responses, and reject corrupt status files."""
+        """Accept confirmed /status JSON, treat unconfirmed as absent, reject a corrupt cache file."""
         confirmed = {"confirmed": True, "block_height": 10, "block_hash": "ab" * 32}
         with self.subTest(case="confirmed"), patch("prevouts.time.sleep"), patch(
                 "prevouts.urlopen", return_value=BytesIO(json.dumps(confirmed).encode())):
