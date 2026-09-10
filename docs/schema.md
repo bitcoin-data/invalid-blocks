@@ -42,10 +42,10 @@ Context is shared across observations; adding another witness does not duplicate
 | --- | --- | --- |
 | `expected_nbits` | string | Canonical compact target as eight hex characters. Required for `nbits_retarget_not_applied`. |
 | `parent_mtp` | integer | Parent median-time-past, the median of eleven block timestamps, in Unix seconds. Required for `time_below_mtp`. |
-| `coinbase_height` | integer | Height decoded from the BIP34 scriptSig prefix. Required for a BIP34 height mismatch. |
-| `coinbase_scriptsig_hex` | string | Coinbase input scriptSig. Required for BIP34 failures and `coinbase_scriptsig_length_above_100`. |
+| `coinbase_height` | integer | Height decoded from the BIP34 scriptSig prefix. Required for a BIP34 height mismatch, and for `missing_unconfirmed_parent` (must equal the record height). |
+| `coinbase_scriptsig_hex` | string | Coinbase input scriptSig. Required for BIP34 failures, `coinbase_scriptsig_length_above_100`, and `missing_unconfirmed_parent`. |
 | `pool` | string | Pool identified from the coinbase tag, when known. |
-| `parent_kind` | string | Chain status of the previous block: `canonical`, `stale`, or `invalid`. `invalid` means the previous block is in this dataset. Must be `canonical` for `missing_unconfirmed_parent`. |
+| `parent_kind` | string | Chain status of the previous block: `canonical`, `stale`, or `invalid`. `invalid` means the previous block is in this dataset. Must be `canonical` for `missing_unconfirmed_parent`; CI checks the string, review establishes the fact. |
 
 ## Optional `observations` array
 
@@ -121,7 +121,7 @@ A provenance URL cannot bypass these requirements.
 | --- | --- |
 | `bad-txns-vout-toolarge` | A complete block whose transactions contain an output above 21000000 BTC. |
 | `bad-txns-inputs-missingorspent` | A complete block containing a spend of an existing output of a later transaction in that block. Other missing/spent-input cases require an additional evidence checker before admission. |
-| `missing_unconfirmed_parent` | A complete block with `parent_kind` `canonical` and a coinbase height matching the record height, containing an input whose parent transaction is not in the block. That parent transaction must be fetched or cached, verified by txid, and contain the spent output index, and a public API must currently report it confirmed in a different block at this height or later. Unconfirmed or absent status is not evidence; a parent transaction confirmed below this height is a normal spend. |
+| `missing_unconfirmed_parent` | A complete block with `parent_kind` `canonical`, `coinbase_height` equal to the record height and `coinbase_scriptsig_hex` matching the body, containing an input whose parent transaction is not in the block. That parent transaction must be fetched or cached, verified by txid, and contain the spent output index, and a public API must currently report it confirmed in a different block at this height or later. Unconfirmed or absent status is not evidence; a parent transaction confirmed below this height is a normal spend. |
 | `bad-blk-sigops` | A complete block at mainnet height 481824 or later, authenticated previous transactions for every external input, and calculated BIP16/BIP141 sigop cost above 80000. |
 | `bip34_v2_coinbase_height_mismatch` | Both coinbase context fields, decoded height matching the scriptSig, and a scriptSig that lacks the exact expected BIP34 prefix. Header version must be at least 2 and height below 227931. Applicability of the historical rolling-version threshold still requires review. |
 | `bip34_coinbase_height_mismatch` | Both coinbase context fields, decoded height matching the scriptSig, and a scriptSig that lacks the exact expected BIP34 prefix, at height 227931 or later. A non-minimal encoding of the right number also fails the prefix check. |
@@ -142,7 +142,7 @@ At or after mainnet SegWit activation, witness data must match the coinbase witn
 
 The validator also checks JSONL structure, field types, decoded Bitcoin header identity, compact target and PoW, ordering, uniqueness and observation fields.
 Locally checked predicates establish consistency with the supplied context.
-Review must still establish the block height, parent MTP, expected difficulty, historical activation state and the connection between an extracted coinbase script and its header when no complete body is available.
+Review must still establish the block height, parent MTP, expected difficulty, historical activation state, the chain status claimed in `parent_kind`, and the connection between an extracted coinbase script and its header when no complete body is available.
 The retarget check does not reconstruct the previous difficulty or prove that it was reused.
 CI does not execute scripts, validate child-chain commitments, reconstruct historical chain state or fetch observation provenance.
 It verifies the named failures, not every consensus rule or the exact first rejection a historical node would return.
@@ -199,3 +199,4 @@ Offline validation needs both files in `.cache/prevouts/`.
 This check does not reconstruct a UTXO set or replay `ConnectBlock`.
 The status endpoint reports where the transaction sits on the chain the provider currently treats as canonical, not when it first confirmed, so a parent transaction that confirmed earlier, was reorged out and re-confirmed at or above the candidate's height would still pass.
 Duplicate historical transaction IDs can make the reported height ambiguous.
+CI requires `parent_kind` to be `canonical` but does not verify that `prev_hash` is the main-chain block at the previous height; if the previous block was not canonical, a main-chain confirmation says nothing about the UTXO set the miner was extending.
