@@ -49,7 +49,7 @@ class BlockEvidenceChecks(unittest.TestCase):
         self.assertFalse(establishes_rule(read_block(block(coinbase, producer)), rule))
 
     def test_missing_unconfirmed_parent_requires_later_external_confirmation(self):
-        """Omitted-parent evidence needs an authenticated output currently confirmed elsewhere at or after this height."""
+        """An omitted parent must be confirmed at this height or later in another block."""
         coinbase = transaction()
         parent = transaction(prev_hash=b"\x11" * 32, vout=0)
         parent_txid = sha256d(parent[1])
