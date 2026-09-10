@@ -42,10 +42,10 @@ Context is shared across observations; adding another witness does not duplicate
 | --- | --- | --- |
 | `expected_nbits` | string | Canonical compact target as eight hex characters. Required for `nbits_retarget_not_applied`. |
 | `parent_mtp` | integer | Parent median-time-past, the median of eleven block timestamps, in Unix seconds. Required for `time_below_mtp`. |
-| `coinbase_height` | integer | Height decoded from the BIP34 scriptSig prefix. Required for a BIP34 height mismatch. |
-| `coinbase_scriptsig_hex` | string | Coinbase input scriptSig. Required for BIP34 failures and `coinbase_scriptsig_length_above_100`. |
+| `coinbase_height` | integer | Height decoded from the BIP34 scriptSig prefix. Required for a BIP34 height mismatch and for `missing_unconfirmed_parent`, where it must equal the record height. |
+| `coinbase_scriptsig_hex` | string | Coinbase input scriptSig. Required for BIP34 failures, `coinbase_scriptsig_length_above_100`, and `missing_unconfirmed_parent`. |
 | `pool` | string | Pool identified from the coinbase tag, when known. |
-| `parent_kind` | string | `canonical`, `stale`, or `invalid`. `invalid` means the parent is in this dataset. Required as `canonical` for `missing_unconfirmed_parent`. |
+| `parent_kind` | string | `canonical`, `stale`, or `invalid`. `invalid` means the parent is in this dataset. Required as claimed `canonical` for `missing_unconfirmed_parent`; the claim is reviewed, not checked against a provider. |
 
 ## Optional `observations` array
 
@@ -121,7 +121,7 @@ A provenance URL cannot bypass these requirements.
 | --- | --- |
 | `bad-txns-vout-toolarge` | A complete block whose transactions contain an output above 21000000 BTC. |
 | `bad-txns-inputs-missingorspent` | A complete block containing a spend of an existing output of a later transaction in that block. Other missing/spent-input cases require an additional evidence checker before admission. |
-| `missing_unconfirmed_parent` | A complete block whose parent is canonical (`parent_kind`), whose coinbase height matches the record height, containing a spend of an output whose parent transaction is not in the block, is authenticated by txid, includes the spent output index, and is currently confirmed on the canonical chain at height greater than or equal to the candidate in a different block hash. An unconfirmed or absent API status is not evidence; a parent currently confirmed below the candidate height is a normal spend. |
+| `missing_unconfirmed_parent` | A complete block whose parent is claimed canonical (`parent_kind`, reviewed), with `coinbase_height` matching the record height and `coinbase_scriptsig_hex` bound to that script, containing a spend of an output whose parent transaction is not in the block, is authenticated by txid, includes the spent output index, and is currently confirmed on the canonical chain at height greater than or equal to the candidate in a different block hash. An unconfirmed or absent API status is not evidence; a parent currently confirmed below the candidate height is a normal spend. |
 | `bad-blk-sigops` | A complete block at mainnet height 481824 or later, authenticated previous transactions for every external input, and calculated BIP16/BIP141 sigop cost above 80000. |
 | `bip34_v2_coinbase_height_mismatch` | Both coinbase context fields, decoded height matching the scriptSig, and a scriptSig that lacks the exact expected BIP34 prefix. Header version must be at least 2 and height below 227931. Applicability of the historical rolling-version threshold still requires review. |
 | `bip34_coinbase_height_mismatch` | Both coinbase context fields, decoded height matching the scriptSig, and a scriptSig that lacks the exact expected BIP34 prefix, at height 227931 or later. A non-minimal encoding of the right number also fails the prefix check. |
@@ -142,7 +142,7 @@ Omitted-parent admission additionally authenticates the parent transaction and a
 
 The validator also checks JSONL structure, field types, decoded Bitcoin header identity, compact target and PoW, ordering, uniqueness and observation fields.
 Locally checked predicates establish consistency with the supplied context.
-Review must still establish the block height, parent MTP, expected difficulty, historical activation state and the connection between an extracted coinbase script and its header when no complete body is available.
+Review must still establish the block height, parent MTP, expected difficulty, historical activation state, whether a claimed `parent_kind` matches the parent's actual chain, and the connection between an extracted coinbase script and its header when no complete body is available.
 The retarget check does not reconstruct the previous difficulty or prove that it was reused.
 CI does not execute scripts, validate child-chain commitments, reconstruct historical chain state or fetch observation provenance.
 It verifies the named failures, not every consensus rule or the exact first rejection a historical node would return.
@@ -188,7 +188,8 @@ This calculation establishes the excessive sigop cost without reconstructing a h
 `missing_unconfirmed_parent` shares Core reject string `bad-txns-inputs-missingorspent` with the in-block forward-spend rule, but the two rules prove different facts.
 The forward-spend checker does not look up external inputs. Treating every missing prevout as a failure would reject most valid blocks, which spend previously confirmed outputs.
 
-Admission requires a complete body, `parent_kind` `canonical`, a coinbase height matching the record height, a non-coinbase input whose prevout txid is not among the block's transaction IDs, an authenticated parent transaction that includes that output index, and a current canonical confirmation of that parent at height greater than or equal to the candidate in a different block hash.
+Admission requires a complete body, a claimed `parent_kind` of `canonical`, `coinbase_height` matching the record height, a coinbase scriptSig bound to that height, a non-coinbase input whose prevout txid is not among the block's transaction IDs, an authenticated parent transaction that includes that output index, and a current canonical confirmation of that parent at height greater than or equal to the candidate in a different block hash.
+The validator checks that the record says `canonical`; it does not ask a provider whether `prev_hash` is the canonical block at the previous height.
 The 1Hash 474294 case is confirmation in the canonical same-height competitor.
 A parent currently confirmed later than the candidate is also admitted.
 A parent currently confirmed earlier is not this failure.
@@ -204,3 +205,4 @@ Offline validation succeeds once the omitted parent transaction and its confirma
 A parent that confirmed below the candidate, was reorged out, and later re-confirmed at or after the candidate height would pass this check even though the output existed on the chain the miner was extending.
 Duplicate historical transaction IDs can also make the confirmation height ambiguous.
 The checker does not prove that the output was unspent at the candidate's parent tip; it proves that the named parent is not currently confirmed in the canonical chain before that height.
+A wrong `parent_kind` would make that confirmation uninformative: if the candidate's parent was not canonical, a later canonical confirmation of the omitted transaction would not speak to the UTXO at the tip the miner was extending.
