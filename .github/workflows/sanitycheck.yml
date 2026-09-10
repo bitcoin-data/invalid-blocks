@@ -1,0 +1,48 @@
+name: invalid-blocks sanity-check
+
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+  # Revalidate the default-branch cache daily before its inactivity expiry.
+  # Keep away from the start of the hour, when scheduled runs are busiest.
+  schedule:
+    - cron: '23 3 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  sanity-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: restore verified previous transactions
+        id: prevouts-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: .cache/prevouts
+          key: prevouts-v1-${{ hashFiles('blocks/*.bin') }}
+          restore-keys: prevouts-v1-
+      - name: validate data and test validator
+        run: |
+          python -m venv .venv
+          . .venv/bin/activate
+          python -m pip install -r requirements.txt
+          python ci/sanity-check.py --fetch-prevouts
+          python -m unittest discover -s ci -p 'test_*.py'
+      # Save once per block set, after validation and tests pass on the default branch.
+      - name: save verified previous transactions
+        if: >-
+          ${{ success() && github.event_name != 'pull_request'
+              && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+              && steps.prevouts-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: .cache/prevouts
+          key: ${{ steps.prevouts-cache.outputs.cache-primary-key }}
