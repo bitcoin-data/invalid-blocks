@@ -6,7 +6,8 @@ from bitcoin.core import CBlock, COutPoint, CTransaction, CTxIn, CTxOut, CTxWitn
 from bitcoin.core.script import CScript, CScriptWitness, OP_TRUE
 
 from block_evidence import (
-    MAX_MONEY, establishes_rule, read_block, sha256d, sigop_count, witness_sigops,
+    MAX_MONEY, establishes_missing_unconfirmed_parent, establishes_rule, omitted_prevouts,
+    read_block, read_transaction, sha256d, sigop_count, witness_sigops,
 )
 
 
@@ -46,6 +47,34 @@ class BlockEvidenceChecks(unittest.TestCase):
         bad_index = transaction(prev_hash=sha256d(producer[1]), vout=1)
         self.assertFalse(establishes_rule(read_block(block(coinbase, bad_index, producer)), rule))
         self.assertFalse(establishes_rule(read_block(block(coinbase, producer)), rule))
+
+    def test_missing_unconfirmed_parent_requires_later_external_confirmation(self):
+        """Omitted-parent evidence needs an authenticated output currently confirmed elsewhere at or after this height."""
+        coinbase = transaction()
+        parent = transaction(prev_hash=b"\x11" * 32, vout=0)
+        parent_txid = sha256d(parent[1])
+        consumer = transaction(prev_hash=parent_txid, vout=0)
+        included = read_block(block(coinbase, parent, consumer))
+        forward = read_block(block(coinbase, consumer, parent))
+        missing = read_block(block(coinbase, consumer))
+        previous = {parent_txid: read_transaction(parent[0])}
+        candidate = "ab" * 32
+        later = {parent_txid: (100, "cd" * 32)}
+        self.assertFalse(establishes_missing_unconfirmed_parent(included, 100, candidate, previous, later))
+        self.assertTrue(establishes_rule(forward, "bad-txns-inputs-missingorspent"))
+        self.assertFalse(establishes_missing_unconfirmed_parent(forward, 100, candidate, previous, later))
+        self.assertEqual(omitted_prevouts(missing.vtx), [(parent_txid, 0)])
+        self.assertTrue(establishes_missing_unconfirmed_parent(missing, 100, candidate, previous, later))
+        self.assertTrue(establishes_missing_unconfirmed_parent(missing, 99, candidate, previous, later))
+        self.assertFalse(establishes_missing_unconfirmed_parent(missing, 101, candidate, previous, later))
+        self.assertFalse(establishes_missing_unconfirmed_parent(
+            missing, 100, candidate, previous, {parent_txid: (99, "cd" * 32)}))
+        self.assertFalse(establishes_missing_unconfirmed_parent(
+            missing, 100, candidate, previous, {parent_txid: (100, candidate)}))
+        bad_index = read_block(block(coinbase, transaction(prev_hash=parent_txid, vout=1)))
+        self.assertFalse(establishes_missing_unconfirmed_parent(bad_index, 100, candidate, previous, later))
+        self.assertFalse(establishes_missing_unconfirmed_parent(missing, 100, candidate, previous, {}))
+        self.assertFalse(establishes_missing_unconfirmed_parent(missing, 100, candidate, {}, later))
 
     def test_invalid_block_serialization(self):
         """Reject malformed bodies, transaction commitments and witness encodings."""

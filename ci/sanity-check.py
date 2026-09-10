@@ -22,10 +22,10 @@ from bitcoin.core.script import CScript, CScriptInvalidError, OP_1NEGATE
 from bitcoin.core.serialize import uint256_from_compact
 
 from block_evidence import (
-    MAX_BLOCK_SIGOPS_COST, establishes_rule, read_block,
-    sigop_cost, verify_witness_commitment,
+    MAX_BLOCK_SIGOPS_COST, establishes_missing_unconfirmed_parent, establishes_rule,
+    omitted_prevouts, read_block, sigop_cost, verify_witness_commitment,
 )
-from prevouts import DEFAULT_APIS, PREVOUTS_DIR, load_previous
+from prevouts import DEFAULT_APIS, PREVOUTS_DIR, load_missing_parent_evidence, load_previous
 
 DATA_PATH = Path("data/invalid-blocks.jsonl")
 BLOCKS_DIR = Path("blocks")
@@ -42,12 +42,15 @@ PARENT_KINDS = {"canonical", "stale", "invalid"}
 POW_LIMIT = 0xFFFF << (8 * (0x1D - 3))
 
 # Evidence paths: local = checked header/context predicate; body = a complete,
-# merkle-bound body proving the failure; sigops = body plus authenticated prevouts.
+# merkle-bound body proving the failure; sigops = body plus authenticated
+# prevouts; missing_parent = body plus an omitted parent currently confirmed
+# at or after the candidate height in a different block, with a canonical parent.
 # Keep the rule names and reject strings aligned with docs/schema.md.
 RULES = {
     "bad-txns-vout-toolarge": ("bad-txns-vout-toolarge", (), "body"),
     "bad-blk-sigops": ("bad-blk-sigops", (), "sigops"),
     "bad-txns-inputs-missingorspent": ("bad-txns-inputs-missingorspent", (), "body"),
+    "missing_unconfirmed_parent": ("bad-txns-inputs-missingorspent", ("parent_kind",), "missing_parent"),
     "bip34_v2_coinbase_height_mismatch": (
         "bad-cb-height", ("coinbase_height", "coinbase_scriptsig_hex"), "local"),
     "bip34_coinbase_height_mismatch": (
@@ -279,6 +282,26 @@ def check_failure_evidence(record: dict[str, Any], block: CBlock | None, prevout
         raise ValueError(f"{record['rule']} requires a complete block body")
     if mode == "body" and not establishes_rule(block, record["rule"]):
         raise ValueError(f"committed body does not demonstrate {record['rule']}")
+    if mode == "missing_parent":
+        if record.get("context", {}).get("parent_kind") != "canonical":
+            raise ValueError("missing_unconfirmed_parent requires parent_kind canonical")
+        if script_height(bytes(block.vtx[0].vin[0].scriptSig)) != record["height"]:
+            raise ValueError("coinbase height does not match record height")
+        previous, confirmations = load_missing_parent_evidence(
+            block.vtx, record["height"], record["hash"], prevouts_dir, fetch_prevouts, apis)
+        if not establishes_missing_unconfirmed_parent(
+                block, record["height"], record["hash"], previous, confirmations):
+            omitted = {b2lx(txid) for txid, _ in omitted_prevouts(block.vtx)}
+            cached = {b2lx(txid) for txid in confirmations}
+            if not fetch_prevouts and omitted - cached:
+                missing = sorted(omitted - cached)[0]
+                raise ValueError(f"missing cached confirmation {missing}; run with --fetch-prevouts")
+            raise ValueError(f"committed body does not demonstrate {record['rule']}")
+        elif fetch_prevouts:
+            parent = next(iter(previous))
+            confirmed_height, confirmed_hash = confirmations[parent]
+            print(f"{record['height']}: omitted parent {b2lx(parent)} currently confirmed at "
+                  f"{confirmed_height} in {confirmed_hash}", flush=True)
     if mode == "sigops":
         # This checker uses BIP16 + BIP141 counting, not pre-SegWit rules.
         if record["height"] < 481824:
@@ -365,7 +388,8 @@ def check_dataset(path: Path | str = DATA_PATH, blocks_dir: Path | str = BLOCKS_
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--fetch-prevouts", action="store_true", help="fetch missing sigops prevout evidence from public APIs")
+    parser.add_argument("--fetch-prevouts", action="store_true",
+                        help="fetch missing sigops prevouts and omitted-parent confirmations from public APIs")
     parser.add_argument("--prevouts-dir", type=Path, default=PREVOUTS_DIR, help="verified transaction cache directory")
     parser.add_argument("--api-url", action="append", help="Esplora API base URL; repeat for fallback providers")
     args = parser.parse_args()
