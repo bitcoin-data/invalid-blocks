@@ -88,6 +88,13 @@ def read_block(data: bytes) -> CBlock:
     return block
 
 
+def omitted_prevouts(transactions: Sequence[CTransaction]) -> list[tuple[bytes, int]]:
+    """Return external prevouts spent by non-coinbase inputs, as (txid, vout)."""
+    own = {tx.GetTxid() for tx in transactions}
+    return [(txin.prevout.hash, txin.prevout.n)
+            for tx in transactions[1:] for txin in tx.vin if txin.prevout.hash not in own]
+
+
 def establishes_rule(block: CBlock, rule: str) -> bool:
     """Recognize only failures provable from these committed transactions.
 
@@ -105,6 +112,29 @@ def establishes_rule(block: CBlock, rule: str) -> bool:
                 later = positions.get(txin.prevout.hash)
                 if later is not None and later > index and txin.prevout.n < len(transactions[later].vout):
                     return True
+    return False
+
+
+def establishes_missing_unconfirmed_parent(
+        block: CBlock, height: int, block_hash: str,
+        previous_transactions: Mapping[bytes, CTransaction],
+        confirmations: Mapping[bytes, tuple[int, str]]) -> bool:
+    """True when a spend names an output currently confirmed at or after this height elsewhere.
+
+    confirmations maps raw txid to (block_height, display-order block hash)
+    from a provider's current canonical status. Unconfirmed prevouts and
+    parents confirmed below the candidate height are not evidence. Duplicate
+    txids and later re-confirmation can make that height ambiguous; this
+    check does not reconstruct a UTXO set.
+    """
+    for txid, vout in omitted_prevouts(block.vtx):
+        confirmation = confirmations.get(txid)
+        previous = previous_transactions.get(txid)
+        if confirmation is None or previous is None or vout >= len(previous.vout):
+            continue
+        confirmed_height, confirmed_hash = confirmation
+        if confirmed_height >= height and confirmed_hash != block_hash:
+            return True
     return False
 
 

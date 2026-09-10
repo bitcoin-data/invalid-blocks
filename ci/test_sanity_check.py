@@ -119,6 +119,15 @@ class DatasetChecks(unittest.TestCase):
         problems, _ = CHECK.check_dataset(path, self.root / "blocks", self.root / "empty-cache")
         self.assertTrue(any("missing cached previous transaction" in p for p in problems))
 
+    def test_missing_parent_requires_confirmation_cache(self):
+        """A complete omitted-parent block still fails admission without confirmation evidence."""
+        self.record = self.for_rule("missing_unconfirmed_parent")
+        self.copy_body(self.record)
+        path = self.root / "missing-parent.jsonl"
+        path.write_text(json.dumps(self.record) + "\n")
+        problems, _ = CHECK.check_dataset(path, self.root / "blocks", self.root / "empty-cache")
+        self.assertTrue(any("missing cached confirmation" in p for p in problems))
+
     def test_sigops_limit_and_supported_activation(self):
         """Require cost above 80000 and reject pre-SegWit records before fetching evidence."""
         self.record = self.for_rule("bad-blk-sigops")

@@ -34,6 +34,7 @@ Prefer immutable evidence URLs.
 For header rules, observations and full block files are optional.
 Body failures require a complete `.bin` that demonstrates the named failure.
 For sigops, CI fetches the referenced previous transactions from public APIs, verifies their transaction IDs, and calculates the cost using their output scripts.
+For an omitted parent transaction, CI verifies that transaction's txid and requires a public API to report it currently confirmed in another block at this height or later.
 The [schema](docs/schema.md#evidence-enforced-by-ci) specifies each rule's evidence contract; observation labels cannot substitute for these checks.
 
 Replaying a `.bin` with `bitcoin-cli submitblock` reproduces context-free failures such as 74638's `bad-txns-vout-toolarge`; connect-level failures such as `bad-blk-sigops` need the historical chain context.
@@ -54,10 +55,10 @@ It checks JSONL structure, types, ordering, uniqueness, header hash, PoW and dec
 It enforces the rule/reject-string mapping, required context and rule-specific predicates.
 Validation reports the first error in each record, with its file and line number, then continues to the next record.
 Available block files must parse completely and match their transaction merkle roots and applicable witness commitments.
-CI checks output-value overflow, forward transaction spends and excessive sigop cost directly.
+CI checks output-value overflow, forward transaction spends, omitted parent transactions and excessive sigop cost directly.
 
 Sigops checks use a verified cache in `.cache/prevouts/`, restored between GitHub Actions runs.
-Missing entries are fetched from public Esplora-compatible APIs when `--fetch-prevouts` is supplied.
+Missing previous transactions, and omitted-parent confirmation status files, are fetched from public Esplora-compatible APIs when `--fetch-prevouts` is supplied.
 API failures, missing evidence and corrupt cached transactions fail validation.
 After filling the cache, omit the flag for an offline run; `--prevouts-dir` selects another cache and `--api-url` selects an API base.
 The [schema](docs/schema.md#sigops-evidence-and-public-apis) explains the authentication and counting checks.
