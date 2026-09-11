@@ -8,7 +8,7 @@ Deeper per-block history is documented elsewhere; see the observation `provenanc
 A `.bin` can be replayed with `bitcoin-cli submitblock`, but what comes back depends on where the violation is caught.
 74638 fails the context-free `CheckBlock` checks before anything is stored, so every replay returns `bad-txns-vout-toolarge` on any node.
 Its header alone is valid, though: `submitheader` accepts it (noted in <https://github.com/bitcoin-data/stale-blocks/pull/65>), since every header-level check passes and the violation lives entirely in the body.
-The transaction-ordering and 2023 sigops blocks fail in `ConnectBlock`, which never runs for a deep side-chain block: a node seeing them fresh returns `inconclusive` and stores the block as a `valid-headers` chain tip, a node that already stores them returns `duplicate`, and only a node that attempted the connect at their original tip and marked them failed returns `duplicate-invalid` (the result reported in <https://github.com/bitcoin-data/stale-blocks/pull/11>).
+The transaction-ordering blocks, 474294 and the 2023 sigops blocks fail in `ConnectBlock`, which never runs for a deep side-chain block: a node seeing them fresh returns `inconclusive` and stores the block as a `valid-headers` chain tip, a node that already stores them returns `duplicate`, and only a node that attempted the connect at their original tip and marked them failed returns `duplicate-invalid` (the result reported in <https://github.com/bitcoin-data/stale-blocks/pull/11>).
 
 ## Incident notes
 
@@ -41,3 +41,15 @@ This violation is re-derivable from the [preserved full block](../blocks/477115-
 `ConnectBlock` processes transactions in order, so the first such input fails the coins lookup: `bad-txns-inputs-missingorspent`.
 This violation is re-derivable from the `.bin` alone.
 Documented in [b10c observation 07](https://b10c.me/observations/07-invalid-block-809478/).
+
+### 474294 - omitted parent transaction (2017)
+
+Transaction 110 spends `b11a78c6c61af1cb37586f639050d74b95c2b0fd525623b6cb6a4bb4fba46a0e:1`, and that parent transaction is not in the block.
+Both transactions confirmed in the competing block at the same height, `000000000000000000db2504327e272fe7658fac0dd0741f46b212256e500886`.
+The spent output did not exist at the tip of the previous block, so `ConnectBlock` fails with `bad-txns-inputs-missingorspent`.
+This is not an in-block ordering error: unlike 477115 and 809478, no later transaction in the body creates the output.
+The [preserved full block](../blocks/474294-00000000000000000182acdf5657c93a0769dc6f9004047496b2e15efc6a4232.bin), the parent transaction and its current confirmation height re-derive the violation.
+CI does not rebuild a UTXO set or replay `ConnectBlock`.
+An explorer `invalid`/`orphan` label is not the evidence.
+
+Contemporaneous discussion is [BitcoinTalk topic 2041607](https://bitcointalk.org/index.php?topic=2041607.0).

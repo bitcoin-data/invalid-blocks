@@ -1,29 +1,90 @@
-"""Acquire previous transactions through Esplora-compatible public APIs.
+"""Fetch previous transactions and omitted-parent confirmation status.
 
-Cache entries contain stripped transaction bytes, sufficient to authenticate
-output scripts against the txid committed in a spending input. Every cache hit
-is verified too. Downloads and cache corruption fail explicitly; there is no
-fallback to a claimed reject string or an unauthenticated scriptPubKey.
+`.bin` files are stripped transactions, checked against the spending txid.
+`.status.json` is the height and block hash Esplora currently reports for
+that tx. Cache hits are checked too. Failed downloads and corrupt files
+fail the run. Unconfirmed status is not cached.
 """
 
-from collections.abc import Sequence
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections.abc import Callable, Sequence
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, as_completed, wait
 from http.client import HTTPException, IncompleteRead
+import json
 from pathlib import Path
+import re
 import time
 import tempfile
+from typing import TypeVar
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from bitcoin.core import CTransaction, b2lx
+from bitcoin.core import CTransaction, b2lx, lx
 
-from block_evidence import read_transaction
+from block_evidence import confirmed_at_or_after, omitted_prevouts, read_transaction
 
 DEFAULT_APIS = ("https://mempool.space/api", "https://blockstream.info/api")
 PREVOUTS_DIR = Path(".cache/prevouts")
+WORKERS = 2
+T = TypeVar("T")
+
+
+def _get(url: str, limit: int, label: str) -> bytes:
+    """Download at most limit bytes. A truncated body raises."""
+    request = Request(url, headers={"User-Agent": "invalid-blocks-evidence-check/1"})
+    with urlopen(request, timeout=30) as response:
+        raw = response.read(limit + 1)
+    if len(raw) > limit:
+        raise ValueError(f"oversized {label}")
+    # urlopen can return a short body without raising. response.length is the
+    # remaining Content-Length.
+    remaining = getattr(response, "length", None)
+    if remaining:
+        raise IncompleteRead(raw, remaining)
+    return raw
+
+
+def _fetch(txid: str, apis: Sequence[str], path: str, limit: int, kind: str,
+           decode: Callable[[bytes], T], retry: tuple[type, ...],
+           missing_ok: bool = False) -> T:
+    """Try each API in turn, up to twice, and return the first decoded body.
+
+    retry names the exception types that earn a second attempt; any
+    other error from decode propagates immediately.
+
+    With missing_ok, an HTTP 404 moves on to the next API instead of
+    retrying, and the result is None if every API returned 404. decode
+    may also return None, which fetch_confirmation uses for unconfirmed
+    status replies.
+    """
+    failures = []
+    not_found = True
+    label = f"{kind} response: {txid}"
+    for api in apis:
+        url = f"{api.rstrip('/')}/{path}"
+        for attempt in range(2):
+            try:
+                result = decode(_get(url, limit, label))
+                time.sleep(0.25)
+                return result
+            except HTTPError as exc:
+                failures.append(f"{url}: {exc}")
+                if missing_ok and exc.code == 404:
+                    break
+                not_found = False
+                if attempt == 0:
+                    time.sleep(2)
+            except retry as exc:
+                not_found = False
+                failures.append(f"{url}: {exc}")
+                if attempt == 0:
+                    time.sleep(2)
+    if missing_ok and failures and not_found:
+        return None
+    raise ValueError(f"could not download {kind} {txid}: " + "; ".join(failures))
 
 
 def decode_previous(data: bytes, txid: str) -> CTransaction:
-    """Authenticate a complete transaction against the requested display txid."""
+    """Parse the transaction and require its txid to match."""
     transaction = read_transaction(data)
     if b2lx(transaction.GetTxid()) != txid:
         raise ValueError(f"previous transaction identity mismatch: {txid}")
@@ -31,52 +92,29 @@ def decode_previous(data: bytes, txid: str) -> CTransaction:
 
 
 def fetch_previous(txid: str, apis: Sequence[str] = DEFAULT_APIS) -> CTransaction:
-    """Fetch raw hex with bounded retries, provider fallback and HTTP timeouts.
+    """Download the raw transaction. Retry timeouts, not a txid mismatch."""
+    def decode(raw: bytes) -> CTransaction:
+        return decode_previous(bytes.fromhex(raw.decode("ascii").strip()), txid)
 
-    Two workers call this function in parallel. Successful downloads are paced
-    and rate-limit/transient failures back off. Identity failures are terminal:
-    trying another provider must not conceal a wrong transaction response.
-    """
-    failures = []
-    for api in apis:
-        url = f"{api.rstrip('/')}/tx/{txid}/hex"
-        for attempt in range(2):
-            request = Request(url, headers={"User-Agent": "invalid-blocks-evidence-check/1"})
-            try:
-                with urlopen(request, timeout=30) as response:
-                    # Raw transaction size is bounded for this evidence path;
-                    # the limit also catches oversized error responses.
-                    raw = response.read(8_000_001)
-                if len(raw) > 8_000_000:
-                    raise ValueError(f"oversized previous transaction response: {txid}")
-                # read(amt) can return early without raising on a truncated
-                # Content-Length response. HTTPResponse tracks bytes still due.
-                remaining = getattr(response, "length", None)
-                if remaining:
-                    raise IncompleteRead(raw, remaining)
-                transaction = decode_previous(bytes.fromhex(raw.decode("ascii").strip()), txid)
-                time.sleep(0.25)
-                return transaction
-            except (OSError, HTTPException) as exc:
-                # urllib wraps connection setup errors, but resets and short
-                # HTTP reads can escape unwrapped after the response starts.
-                failures.append(f"{url}: {exc}")
-                if attempt == 0:
-                    time.sleep(2)
-    raise ValueError(f"could not download previous transaction {txid}: " + "; ".join(failures))
+    return _fetch(txid, apis, f"tx/{txid}/hex", 8_000_000, "previous transaction",
+                  decode, (OSError, HTTPException))
 
 
-def load_previous(transactions: Sequence[CTransaction], cache_dir: Path | str = PREVOUTS_DIR,
-                  fetch: bool = False, apis: Sequence[str] = DEFAULT_APIS) -> dict[bytes, CTransaction]:
-    """Resolve external txids; earlier in-block outputs are handled by sigops.
+def _replace(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as handle:
+        temporary = Path(handle.name)
+        try:
+            handle.write(data)
+            handle.close()
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
-    The complete requested set is required for an exact count. Offline mode
-    reports missing evidence. Online mode writes only verified stripped bytes
-    using atomic replacement, so interrupted downloads cannot poison the cache.
-    """
-    own = {tx.GetTxid() for tx in transactions}
-    needed = sorted({b2lx(txin.prevout.hash) for tx in transactions[1:]
-                     for txin in tx.vin if txin.prevout.hash not in own})
+
+def load_named_previous(txids: Sequence[str], cache_dir: Path | str = PREVOUTS_DIR,
+                         fetch: bool = False, apis: Sequence[str] = DEFAULT_APIS) -> dict[bytes, CTransaction]:
+    """Return each hex txid from cache, or download it when fetch is set."""
     cache_dir = Path(cache_dir)
 
     def load(txid: str) -> CTransaction:
@@ -86,30 +124,156 @@ def load_previous(transactions: Sequence[CTransaction], cache_dir: Path | str = 
         if not fetch:
             raise ValueError(f"missing cached previous transaction {txid}; run with --fetch-prevouts")
         transaction = fetch_previous(txid, apis)
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(dir=cache_dir, delete=False) as handle:
-            temporary = Path(handle.name)
-            try:
-                handle.write(transaction.serialize({"include_witness": False}))
-                handle.close()
-                temporary.replace(path)
-            finally:
-                temporary.unlink(missing_ok=True)
+        _replace(path, transaction.serialize({"include_witness": False}))
         return transaction
 
+    missing = 0
     if fetch:
-        missing = sum(not (cache_dir / f"{txid}.bin").exists() for txid in needed)
-        print(f"Previous transactions: {len(needed)} required, {missing} to download", flush=True)
-    pool = ThreadPoolExecutor(max_workers=2)
-    futures = [pool.submit(load, txid) for txid in needed]
+        missing = sum(not (cache_dir / f"{txid}.bin").exists() for txid in txids)
+        print(f"Previous transactions: {len(txids)} required, {missing} to download", flush=True)
+    pool = ThreadPoolExecutor(max_workers=WORKERS)
+    futures = [pool.submit(load, txid) for txid in txids]
     result = {}
     try:
         for future in as_completed(futures):
             tx = future.result()
             result[tx.GetTxid()] = tx
             if fetch and missing and len(result) % 500 == 0:
-                print(f"Previous transactions verified: {len(result)}/{len(needed)}", flush=True)
+                print(f"Previous transactions verified: {len(result)}/{len(txids)}", flush=True)
     finally:
-        # Do not keep downloading the remaining catalogue after an error.
+        # Stop the other worker; one bad txid fails the whole set.
         pool.shutdown(wait=True, cancel_futures=True)
     return result
+
+
+def load_previous(transactions: Sequence[CTransaction], cache_dir: Path | str = PREVOUTS_DIR,
+                  fetch: bool = False, apis: Sequence[str] = DEFAULT_APIS) -> dict[bytes, CTransaction]:
+    """Load omitted prevouts. Spends of earlier in-block txs are not fetched.
+
+    Every txid is required. Offline, a missing file fails. Online, the
+    stripped transaction is written through a temp file.
+    """
+    needed = sorted(_omitted_display_txids(transactions))
+    return load_named_previous(needed, cache_dir, fetch, apis)
+
+
+def _omitted_display_txids(transactions: Sequence[CTransaction]) -> list[str]:
+    """Hex txids of omitted prevouts, unique, in the order they first appear."""
+    omitted = []
+    seen: set[str] = set()
+    for txid, _ in omitted_prevouts(transactions):
+        display = b2lx(txid)
+        if display not in seen:
+            seen.add(display)
+            omitted.append(display)
+    return omitted
+
+
+def decode_confirmation(data: bytes, txid: str) -> tuple[int, str]:
+    """Read a cached status file as (height, block hash) for txid."""
+    try:
+        payload = json.loads(data)
+    except ValueError as exc:
+        raise ValueError(f"malformed confirmation cache entry: {txid}") from exc
+    return _confirmation(payload, txid)
+
+
+def _confirmation(payload: object, txid: str) -> tuple[int, str]:
+    if not isinstance(payload, dict):
+        raise ValueError(f"malformed confirmation cache entry: {txid}")
+    height = payload.get("block_height")
+    block_hash = payload.get("block_hash")
+    if type(height) is not int or height < 0:
+        raise ValueError(f"malformed confirmation height: {txid}")
+    if not isinstance(block_hash, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", block_hash):
+        raise ValueError(f"malformed confirmation block hash: {txid}")
+    return height, block_hash.lower()
+
+
+def fetch_confirmation(txid: str, apis: Sequence[str] = DEFAULT_APIS) -> tuple[int, str] | None:
+    """Return (height, block hash) if the API lists the tx as confirmed.
+
+    Unconfirmed JSON is None. 404 tries the next API; all 404s is None.
+    Other download failures raise.
+    """
+    def decode(raw: bytes) -> tuple[int, str] | None:
+        payload = json.loads(raw.decode("utf-8"))
+        if not isinstance(payload, dict) or payload.get("confirmed") is not True:
+            return None
+        return _confirmation(payload, txid)
+
+    return _fetch(txid, apis, f"tx/{txid}/status", 65_536, "confirmation", decode,
+                  (OSError, HTTPException, ValueError, UnicodeDecodeError),
+                  missing_ok=True)
+
+
+def load_missing_parent_evidence(
+        transactions: Sequence[CTransaction], height: int, block_hash: str,
+        cache_dir: Path | str = PREVOUTS_DIR, fetch: bool = False,
+        apis: Sequence[str] = DEFAULT_APIS) -> tuple[dict[bytes, CTransaction], dict[bytes, tuple[int, str]]]:
+    """Load confirmation height/hash for omitted parent transactions.
+
+    Cached confirmed entries are kept. Unconfirmed replies are not stored.
+    With fetch, request uncached txids two at a time until one is confirmed
+    at this height or later in another block, or the list runs out. Without
+    fetch, a missing file fails unless that confirmation is already cached.
+    """
+    omitted = _omitted_display_txids(transactions)
+    cache_dir = Path(cache_dir)
+    confirmations: dict[bytes, tuple[int, str]] = {}
+    pending = []
+    for txid in omitted:
+        path = cache_dir / f"{txid}.status.json"
+        try:
+            confirmations[lx(txid)] = decode_confirmation(path.read_bytes(), txid)
+        except FileNotFoundError:
+            pending.append(txid)
+
+    late = [b2lx(raw) for raw, confirmation in confirmations.items()
+            if confirmed_at_or_after(confirmation, height, block_hash)]
+    if not late and pending:
+        if not fetch:
+            raise ValueError(f"missing cached confirmation {pending[0]}; run with --fetch-prevouts")
+        print(f"Omitted-parent confirmations: {len(omitted)} omitted, {len(pending)} to download",
+              flush=True)
+
+        pool = ThreadPoolExecutor(max_workers=WORKERS)
+        pending_iter = iter(pending)
+        inflight: dict[Future, str] = {}
+
+        def submit_next() -> None:
+            txid = next(pending_iter, None)
+            if txid is not None:
+                inflight[pool.submit(fetch_confirmation, txid, apis)] = txid
+
+        for _ in range(WORKERS):
+            submit_next()
+        failures = []
+        try:
+            while inflight:
+                done, _ = wait(inflight, return_when=FIRST_COMPLETED)
+                future = next(iter(done))
+                txid = inflight.pop(future)
+                try:
+                    confirmation = future.result()
+                except ValueError as exc:
+                    # A later omitted txid may still be the proving parent.
+                    failures.append(str(exc))
+                    confirmation = None
+                if confirmation is not None:
+                    _replace(cache_dir / f"{txid}.status.json",
+                             json.dumps({"block_height": confirmation[0],
+                                         "block_hash": confirmation[1]},
+                                        separators=(",", ":")).encode() + b"\n")
+                    confirmations[lx(txid)] = confirmation
+                    if confirmed_at_or_after(confirmation, height, block_hash):
+                        late.append(txid)
+                        break
+                submit_next()
+        finally:
+            pool.shutdown(wait=True, cancel_futures=True)
+        if not late and failures:
+            raise ValueError("; ".join(failures))
+
+    previous = load_named_previous(late, cache_dir, fetch, apis) if late else {}
+    return previous, confirmations

@@ -88,6 +88,19 @@ def read_block(data: bytes) -> CBlock:
     return block
 
 
+def omitted_prevouts(transactions: Sequence[CTransaction]) -> list[tuple[bytes, int]]:
+    """Return external prevouts spent by non-coinbase inputs, as (txid, vout)."""
+    own = {tx.GetTxid() for tx in transactions}
+    return [(txin.prevout.hash, txin.prevout.n)
+            for tx in transactions[1:] for txin in tx.vin if txin.prevout.hash not in own]
+
+
+def confirmed_at_or_after(confirmation: tuple[int, str], height: int, block_hash: str) -> bool:
+    """True if the tx is confirmed at height or later, and not in this block."""
+    confirmed_height, confirmed_hash = confirmation
+    return confirmed_height >= height and confirmed_hash != block_hash
+
+
 def establishes_rule(block: CBlock, rule: str) -> bool:
     """Recognize only failures provable from these committed transactions.
 
@@ -105,6 +118,27 @@ def establishes_rule(block: CBlock, rule: str) -> bool:
                 later = positions.get(txin.prevout.hash)
                 if later is not None and later > index and txin.prevout.n < len(transactions[later].vout):
                     return True
+    return False
+
+
+def establishes_missing_unconfirmed_parent(
+        block: CBlock, height: int, block_hash: str,
+        previous_transactions: Mapping[bytes, CTransaction],
+        confirmations: Mapping[bytes, tuple[int, str]]) -> bool:
+    """True if an omitted input spends an output confirmed at this height or later in another block.
+
+    confirmations is Esplora /status as the provider sees the chain now.
+    Unconfirmed parents, and parents confirmed before this height, are not
+    this failure. Duplicate txids or a later re-confirmation can make that
+    height ambiguous; this is not a UTXO lookup.
+    """
+    for txid, vout in omitted_prevouts(block.vtx):
+        confirmation = confirmations.get(txid)
+        previous = previous_transactions.get(txid)
+        if confirmation is None or previous is None or vout >= len(previous.vout):
+            continue
+        if confirmed_at_or_after(confirmation, height, block_hash):
+            return True
     return False
 
 

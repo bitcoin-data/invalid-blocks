@@ -2,13 +2,14 @@
 
 from io import BytesIO
 from pathlib import Path
+import json
 import tempfile
 import unittest
 from unittest.mock import patch
 from urllib.error import URLError
 
 from block_evidence import read_transaction, sha256d
-from prevouts import decode_previous, fetch_previous, load_previous
+from prevouts import decode_confirmation, decode_previous, fetch_confirmation, fetch_previous, load_previous
 from test_block_evidence import transaction
 
 
@@ -64,6 +65,20 @@ class PrevoutChecks(unittest.TestCase):
         path.write_bytes(transaction(amount=2)[1])
         with self.subTest(case="corrupt entry"), self.assertRaisesRegex(ValueError, "identity mismatch"):
             load_previous(txs, self.cache, fetch=True)
+
+    def test_confirmation_status_is_not_proof_when_unconfirmed_or_corrupt(self):
+        """Accept confirmed /status JSON, treat unconfirmed as absent, reject a corrupt cache file."""
+        confirmed = {"confirmed": True, "block_height": 10, "block_hash": "ab" * 32}
+        with self.subTest(case="confirmed"), patch("prevouts.time.sleep"), patch(
+                "prevouts.urlopen", return_value=BytesIO(json.dumps(confirmed).encode())):
+            self.assertEqual(fetch_confirmation(self.txid, ("https://one.example/api",)), (10, "ab" * 32))
+        with self.subTest(case="unconfirmed"), patch("prevouts.time.sleep"), patch(
+                "prevouts.urlopen", return_value=BytesIO(b'{"confirmed":false}')):
+            self.assertIsNone(fetch_confirmation(self.txid, ("https://one.example/api",)))
+        path = self.cache / f"{self.txid}.status.json"
+        path.write_bytes(b"{")
+        with self.subTest(case="corrupt status file"), self.assertRaisesRegex(ValueError, "malformed confirmation"):
+            decode_confirmation(path.read_bytes(), self.txid)
 
 
 if __name__ == "__main__":

@@ -6,7 +6,8 @@ from bitcoin.core import CBlock, COutPoint, CTransaction, CTxIn, CTxOut, CTxWitn
 from bitcoin.core.script import CScript, CScriptWitness, OP_TRUE
 
 from block_evidence import (
-    MAX_MONEY, establishes_rule, read_block, sha256d, sigop_count, witness_sigops,
+    MAX_MONEY, establishes_missing_unconfirmed_parent, establishes_rule, omitted_prevouts,
+    read_block, read_transaction, sha256d, sigop_count, witness_sigops,
 )
 
 
@@ -46,6 +47,38 @@ class BlockEvidenceChecks(unittest.TestCase):
         bad_index = transaction(prev_hash=sha256d(producer[1]), vout=1)
         self.assertFalse(establishes_rule(read_block(block(coinbase, bad_index, producer)), rule))
         self.assertFalse(establishes_rule(read_block(block(coinbase, producer)), rule))
+
+    def test_missing_unconfirmed_parent_requires_later_external_confirmation(self):
+        """An omitted parent must be confirmed at this height or later in another block."""
+        coinbase = transaction()
+        parent = transaction(prev_hash=b"\x11" * 32, vout=0)
+        parent_txid = sha256d(parent[1])
+        consumer = transaction(prev_hash=parent_txid, vout=0)
+        included = read_block(block(coinbase, parent, consumer))
+        forward = read_block(block(coinbase, consumer, parent))
+        missing = read_block(block(coinbase, consumer))
+        bad_index = read_block(block(coinbase, transaction(prev_hash=parent_txid, vout=1)))
+        previous = {parent_txid: read_transaction(parent[0])}
+        candidate = "ab" * 32
+        later = {parent_txid: (100, "cd" * 32)}
+
+        self.assertEqual(omitted_prevouts(missing.vtx), [(parent_txid, 0)])
+        self.assertTrue(establishes_rule(forward, "bad-txns-inputs-missingorspent"))
+        cases = {
+            "parent in block": (included, 100, previous, later, False),
+            "forward spend is the other rule": (forward, 100, previous, later, False),
+            "confirmed at candidate height elsewhere": (missing, 100, previous, later, True),
+            "confirmed above candidate height": (missing, 99, previous, later, True),
+            "confirmed below candidate height": (missing, 101, previous, later, False),
+            "confirmed in the candidate itself": (missing, 100, previous, {parent_txid: (100, candidate)}, False),
+            "spent output index absent": (bad_index, 100, previous, later, False),
+            "no confirmation": (missing, 100, previous, {}, False),
+            "no parent transaction": (missing, 100, {}, later, False),
+        }
+        for name, (parsed, height, previous_txs, confirmations, expected) in cases.items():
+            with self.subTest(case=name):
+                self.assertEqual(establishes_missing_unconfirmed_parent(
+                    parsed, height, candidate, previous_txs, confirmations), expected)
 
     def test_invalid_block_serialization(self):
         """Reject malformed bodies, transaction commitments and witness encodings."""
