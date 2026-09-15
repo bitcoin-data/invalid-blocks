@@ -36,10 +36,10 @@ class DatasetChecks(unittest.TestCase):
         path.write_bytes((CHECK.BLOCKS_DIR / name).read_bytes())
         return path
 
-    def validate(self, records=None):
+    def validate(self, records=None, prevouts_dir=CHECK.PREVOUTS_DIR):
         path = self.root / "data.jsonl"
         path.write_text("".join(json.dumps(record) + "\n" for record in (records or [self.record])))
-        return CHECK.check_dataset(path, self.root / "blocks")[0]
+        return CHECK.check_dataset(path, self.root / "blocks", prevouts_dir)[0]
 
     def test_documented_sigops_breakdowns(self):
         """Reproduce both F2Pool blocks' documented legacy, P2SH and witness costs."""
@@ -118,6 +118,26 @@ class DatasetChecks(unittest.TestCase):
         path.write_text(json.dumps(self.record) + "\n")
         problems, _ = CHECK.check_dataset(path, self.root / "blocks", self.root / "empty-cache")
         self.assertTrue(any("missing cached previous transaction" in p for p in problems))
+
+    def test_missing_parent_requires_recorded_outpoint_and_cached_evidence(self):
+        """The body must spend the recorded outpoint, the previous block must be canonical, and evidence must be cached."""
+        self.record = self.for_rule("missing_unconfirmed_parent")
+        self.copy_body(self.record)
+        cache = self.root / "cache"
+        cache.mkdir()
+        canonical = cache / f"height-{self.record['height'] - 1}.hash"
+        with self.subTest(case="malformed outpoint"), patch.dict(self.record["context"], {"missing_prevout": "abc"}):
+            self.assertTrue(any("missing_prevout must be" in p for p in self.validate(prevouts_dir=cache)))
+        with self.subTest(case="outpoint not spent"), patch.dict(self.record["context"], {"missing_prevout": "00" * 32 + ":0"}):
+            self.assertTrue(any("not spent by the body" in p for p in self.validate(prevouts_dir=cache)))
+        with self.subTest(case="no cached canonical hash"):
+            self.assertTrue(any("missing cached block hash" in p for p in self.validate(prevouts_dir=cache)))
+        canonical.write_text("00" * 32)
+        with self.subTest(case="previous block not canonical"):
+            self.assertTrue(any("not the canonical block" in p for p in self.validate(prevouts_dir=cache)))
+        canonical.write_text(self.record["prev_hash"])
+        with self.subTest(case="no cached parent transaction"):
+            self.assertTrue(any("missing cached previous transaction" in p for p in self.validate(prevouts_dir=cache)))
 
     def test_sigops_limit_and_supported_activation(self):
         """Require cost above 80000 and reject pre-SegWit records before fetching evidence."""

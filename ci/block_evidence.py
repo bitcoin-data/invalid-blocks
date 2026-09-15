@@ -88,6 +88,23 @@ def read_block(data: bytes) -> CBlock:
     return block
 
 
+def omitted_prevouts(transactions: Sequence[CTransaction]) -> list[tuple[bytes, int]]:
+    """Return external prevouts spent by non-coinbase inputs, as (txid, vout)."""
+    own = {tx.GetTxid() for tx in transactions}
+    return [(txin.prevout.hash, txin.prevout.n)
+            for tx in transactions[1:] for txin in tx.vin if txin.prevout.hash not in own]
+
+
+def confirmed_at_or_after(confirmation: tuple[int, str], height: int, block_hash: str) -> bool:
+    """True if the parent is now confirmed at height or later in a block other than block_hash.
+
+    It was then not in the chain below the candidate, so its output did not
+    exist at the tip of a canonical previous block. This is not a UTXO lookup.
+    """
+    confirmed_height, confirmed_hash = confirmation
+    return confirmed_height >= height and confirmed_hash != block_hash
+
+
 def establishes_rule(block: CBlock, rule: str) -> bool:
     """Recognize only failures provable from these committed transactions.
 

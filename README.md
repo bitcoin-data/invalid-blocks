@@ -56,7 +56,7 @@ Validation reports the first error in each record, with its file and line number
 Available block files must parse completely and match their transaction merkle roots and applicable witness commitments.
 CI checks output-value overflow, forward transaction spends and excessive sigop cost directly.
 
-Sigops checks use a verified cache in `.cache/prevouts/`, restored between GitHub Actions runs.
+Sigops and missing-parent checks use a verified cache in `.cache/prevouts/`, restored between GitHub Actions runs.
 Missing entries are fetched from public Esplora-compatible APIs when `--fetch-prevouts` is supplied.
 API failures, missing evidence and corrupt cached transactions fail validation.
 After filling the cache, omit the flag for an offline run; `--prevouts-dir` selects another cache and `--api-url` selects an API base.

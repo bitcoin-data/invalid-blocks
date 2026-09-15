@@ -6,7 +6,8 @@ from bitcoin.core import CBlock, COutPoint, CTransaction, CTxIn, CTxOut, CTxWitn
 from bitcoin.core.script import CScript, CScriptWitness, OP_TRUE
 
 from block_evidence import (
-    MAX_MONEY, establishes_rule, read_block, sha256d, sigop_count, witness_sigops,
+    MAX_MONEY, confirmed_at_or_after, establishes_rule, omitted_prevouts, read_block, sha256d,
+    sigop_count, witness_sigops,
 )
 
 
@@ -46,6 +47,19 @@ class BlockEvidenceChecks(unittest.TestCase):
         bad_index = transaction(prev_hash=sha256d(producer[1]), vout=1)
         self.assertFalse(establishes_rule(read_block(block(coinbase, bad_index, producer)), rule))
         self.assertFalse(establishes_rule(read_block(block(coinbase, producer)), rule))
+
+    def test_missing_parent_boundaries(self):
+        """Only outside-block spends are omitted prevouts; the parent must be confirmed at this height or later elsewhere."""
+        coinbase = transaction()
+        parent = transaction(prev_hash=b"\x11" * 32, vout=0)
+        consumer = transaction(prev_hash=sha256d(parent[1]), vout=0)
+        self.assertEqual(omitted_prevouts(read_block(block(coinbase, consumer)).vtx), [(sha256d(parent[1]), 0)])
+        self.assertEqual(omitted_prevouts(read_block(block(coinbase, parent, consumer)).vtx), [(b"\x11" * 32, 0)])
+        candidate = "ab" * 32
+        for confirmation, expected in (((99, "cd" * 32), False), ((100, "cd" * 32), True),
+                                       ((101, "cd" * 32), True), ((100, candidate), False)):
+            with self.subTest(confirmation=confirmation):
+                self.assertEqual(confirmed_at_or_after(confirmation, 100, candidate), expected)
 
     def test_invalid_block_serialization(self):
         """Reject malformed bodies, transaction commitments and witness encodings."""

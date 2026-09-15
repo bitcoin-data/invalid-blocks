@@ -2,13 +2,14 @@
 
 from io import BytesIO
 from pathlib import Path
+import json
 import tempfile
 import unittest
 from unittest.mock import patch
 from urllib.error import URLError
 
 from block_evidence import read_transaction, sha256d
-from prevouts import decode_previous, fetch_previous, load_previous
+from prevouts import decode_previous, fetch_previous, load_canonical_hash, load_confirmation, load_previous
 from test_block_evidence import transaction
 
 
@@ -64,6 +65,28 @@ class PrevoutChecks(unittest.TestCase):
         path.write_bytes(transaction(amount=2)[1])
         with self.subTest(case="corrupt entry"), self.assertRaisesRegex(ValueError, "identity mismatch"):
             load_previous(txs, self.cache, fetch=True)
+
+    @patch("prevouts.time.sleep")
+    def test_unconfirmed_status_is_not_evidence_or_cached(self, sleep):
+        """Decode a confirmed status reply; an unconfirmed one fails and is not written to the cache."""
+        path = self.cache / f"{self.txid}.status.json"
+        with patch("prevouts.urlopen", return_value=BytesIO(b'{"confirmed":false}')):
+            with self.assertRaisesRegex(ValueError, "not confirmed"):
+                load_confirmation(self.txid, self.cache, fetch=True)
+        self.assertFalse(path.exists())
+        confirmed = json.dumps({"confirmed": True, "block_height": 10, "block_hash": "AB" * 32}).encode()
+        with patch("prevouts.urlopen", return_value=BytesIO(confirmed)):
+            self.assertEqual(load_confirmation(self.txid, self.cache, fetch=True), (10, "ab" * 32))
+
+    @patch("prevouts.time.sleep")
+    def test_malformed_block_hash_is_not_cached(self, sleep):
+        """Accept only a 64-hex block-height reply; anything else fails and is not written to the cache."""
+        with patch("prevouts.urlopen", return_value=BytesIO(b"Block not found")):
+            with self.assertRaisesRegex(ValueError, "malformed block hash"):
+                load_canonical_hash(5, self.cache, fetch=True)
+        self.assertFalse((self.cache / "height-5.hash").exists())
+        with patch("prevouts.urlopen", return_value=BytesIO(b"AB" * 32)):
+            self.assertEqual(load_canonical_hash(5, self.cache, fetch=True), "ab" * 32)
 
 
 if __name__ == "__main__":

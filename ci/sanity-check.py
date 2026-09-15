@@ -16,24 +16,27 @@ import sys
 from typing import Any
 from urllib.parse import urlparse
 
-from bitcoin.core import CBlock, CBlockHeader, b2lx
+from bitcoin.core import CBlock, CBlockHeader, b2lx, lx
 from bitcoin.core._bignum import vch2bn
 from bitcoin.core.script import CScript, CScriptInvalidError, OP_1NEGATE
 from bitcoin.core.serialize import uint256_from_compact
 
 from block_evidence import (
-    MAX_BLOCK_SIGOPS_COST, establishes_rule, read_block,
-    sigop_cost, verify_witness_commitment,
+    MAX_BLOCK_SIGOPS_COST, confirmed_at_or_after, establishes_rule, omitted_prevouts,
+    read_block, sigop_cost, verify_witness_commitment,
 )
-from prevouts import DEFAULT_APIS, PREVOUTS_DIR, load_previous
+from prevouts import (
+    DEFAULT_APIS, PREVOUTS_DIR, load_canonical_hash, load_confirmation, load_previous, load_transaction,
+)
 
 DATA_PATH = Path("data/invalid-blocks.jsonl")
 BLOCKS_DIR = Path("blocks")
 REQUIRED = {"height", "hash", "header", "prev_hash", "nTime", "core_reject_reason", "rule"}
 CONTEXT_FIELDS = {
     "expected_nbits", "parent_mtp", "coinbase_height", "coinbase_scriptsig_hex",
-    "pool", "parent_kind",
+    "pool", "parent_kind", "missing_prevout",
 }
+OUTPOINT = re.compile(r"[0-9a-f]{64}:(?:0|[1-9][0-9]*)")
 OBSERVATION_REQUIRED = {"channel", "source", "provenance"}
 CHILD_FIELDS = {"child_chain", "child_height", "child_block_hash", "child_block_time", "child_header"}
 OBSERVATION_FIELDS = OBSERVATION_REQUIRED | CHILD_FIELDS | {"first_seen"}
@@ -41,13 +44,15 @@ CHANNELS = {"merge_mining", "p2p", "scrape"}
 PARENT_KINDS = {"canonical", "stale", "invalid"}
 POW_LIMIT = 0xFFFF << (8 * (0x1D - 3))
 
-# Evidence paths: local = checked header/context predicate; body = a complete,
-# merkle-bound body proving the failure; sigops = body plus authenticated prevouts.
-# Keep the rule names and reject strings aligned with docs/schema.md.
+# Evidence paths: local = header/context only; body = complete block file;
+# sigops = body plus previous transactions; missing_parent = body plus API
+# evidence for the recorded outpoint. Rule names and reject strings must
+# match docs/schema.md.
 RULES = {
     "bad-txns-vout-toolarge": ("bad-txns-vout-toolarge", (), "body"),
     "bad-blk-sigops": ("bad-blk-sigops", (), "sigops"),
     "bad-txns-inputs-missingorspent": ("bad-txns-inputs-missingorspent", (), "body"),
+    "missing_unconfirmed_parent": ("bad-txns-inputs-missingorspent", ("missing_prevout",), "missing_parent"),
     "bip34_v2_coinbase_height_mismatch": (
         "bad-cb-height", ("coinbase_height", "coinbase_scriptsig_hex"), "local"),
     "bip34_coinbase_height_mismatch": (
@@ -158,6 +163,9 @@ def check_context(record: dict[str, Any]) -> None:
             hex_value(details, name, size)
     if "pool" in details:
         string(details, "pool")
+    if "missing_prevout" in details and not (
+            isinstance(details["missing_prevout"], str) and OUTPOINT.fullmatch(details["missing_prevout"])):
+        raise ValueError("missing_prevout must be txid:vout in lowercase hex")
     if "parent_kind" in details and details["parent_kind"] not in tuple(PARENT_KINDS):
         raise ValueError(f"parent_kind must be one of {sorted(PARENT_KINDS)}")
     required = set(RULES[record["rule"]][1])
@@ -229,11 +237,10 @@ def height_prefix(height: int) -> bytes:
 
 
 def check_local_evidence(record: dict[str, Any], header: CBlockHeader) -> None:
-    """Check the claimed failure against already type-checked header/context.
+    """Check the named rule against header and context already in the record.
 
-    This proves consistency with supplied height, MTP and expected difficulty;
-    it does not authenticate those facts against the parent chain or bind an
-    extracted coinbase script to the header without a complete body.
+    Parent MTP, expected nBits and parent_kind are not looked up on the chain.
+    Without a body, a coinbase scriptSig cannot be bound to the header.
     """
     rule = record["rule"]
     context = record.get("context", {})
@@ -279,6 +286,23 @@ def check_failure_evidence(record: dict[str, Any], block: CBlock | None, prevout
         raise ValueError(f"{record['rule']} requires a complete block body")
     if mode == "body" and not establishes_rule(block, record["rule"]):
         raise ValueError(f"committed body does not demonstrate {record['rule']}")
+    if mode == "missing_parent":
+        txid, vout = record["context"]["missing_prevout"].split(":")
+        if (lx(txid), int(vout)) not in omitted_prevouts(block.vtx):
+            raise ValueError("missing_prevout is not spent by the body from outside the block")
+        previous_height = record["height"] - 1
+        canonical = load_canonical_hash(previous_height, prevouts_dir, fetch_prevouts, apis)
+        if canonical != record["prev_hash"]:
+            raise ValueError(f"prev_hash is not the canonical block at height {previous_height}")
+        parent = load_transaction(txid, prevouts_dir, fetch_prevouts, apis)
+        if int(vout) >= len(parent.vout):
+            raise ValueError(f"missing_prevout output {vout} does not exist in the parent transaction")
+        confirmation = load_confirmation(txid, prevouts_dir, fetch_prevouts, apis)
+        if not confirmed_at_or_after(confirmation, record["height"], record["hash"]):
+            raise ValueError("parent transaction is not confirmed at this height or later in another block")
+        if fetch_prevouts:
+            print(f"{record['height']}: parent {txid} currently confirmed at {confirmation[0]} "
+                  f"in {confirmation[1]}; canonical block at {previous_height} is {canonical}", flush=True)
     if mode == "sigops":
         # This checker uses BIP16 + BIP141 counting, not pre-SegWit rules.
         if record["height"] < 481824:
@@ -365,7 +389,8 @@ def check_dataset(path: Path | str = DATA_PATH, blocks_dir: Path | str = BLOCKS_
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--fetch-prevouts", action="store_true", help="fetch missing sigops prevout evidence from public APIs")
+    parser.add_argument("--fetch-prevouts", action="store_true",
+                        help="fetch missing sigops prevouts, parent confirmations and canonical block hashes from public APIs")
     parser.add_argument("--prevouts-dir", type=Path, default=PREVOUTS_DIR, help="verified transaction cache directory")
     parser.add_argument("--api-url", action="append", help="Esplora API base URL; repeat for fallback providers")
     args = parser.parse_args()

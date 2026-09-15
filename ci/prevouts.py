@@ -1,15 +1,19 @@
-"""Acquire previous transactions through Esplora-compatible public APIs.
+"""Fetch previous transactions, parent confirmations and canonical block hashes.
 
-Cache entries contain stripped transaction bytes, sufficient to authenticate
-output scripts against the txid committed in a spending input. Every cache hit
-is verified too. Downloads and cache corruption fail explicitly; there is no
-fallback to a claimed reject string or an unauthenticated scriptPubKey.
+`{txid}.bin` is a stripped transaction, checked against its txid.
+`{txid}.status.json` is the Esplora status reply for that transaction, and
+`height-{n}.hash` is the block hash Esplora reports at height n. Cache hits
+are decoded and checked like downloads. Failed downloads and corrupt files
+fail the run, and a reply is stored only after it decodes as evidence, so an
+unconfirmed status is never cached.
 """
 
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.client import HTTPException, IncompleteRead
+import json
 from pathlib import Path
+import re
 import time
 import tempfile
 from typing import TypeVar
@@ -17,10 +21,11 @@ from urllib.request import Request, urlopen
 
 from bitcoin.core import CTransaction, b2lx
 
-from block_evidence import read_transaction
+from block_evidence import omitted_prevouts, read_transaction
 
 DEFAULT_APIS = ("https://mempool.space/api", "https://blockstream.info/api")
 PREVOUTS_DIR = Path(".cache/prevouts")
+BLOCK_HASH = re.compile(r"[0-9a-fA-F]{64}")
 T = TypeVar("T")
 
 
@@ -108,9 +113,7 @@ def load_transaction(txid: str, cache_dir: Path | str = PREVOUTS_DIR, fetch: boo
 def load_previous(transactions: Sequence[CTransaction], cache_dir: Path | str = PREVOUTS_DIR,
                   fetch: bool = False, apis: Sequence[str] = DEFAULT_APIS) -> dict[bytes, CTransaction]:
     """Load every external prevout transaction; spends of earlier in-block txs are not fetched."""
-    own = {tx.GetTxid() for tx in transactions}
-    needed = sorted({b2lx(txin.prevout.hash) for tx in transactions[1:]
-                     for txin in tx.vin if txin.prevout.hash not in own})
+    needed = sorted({b2lx(txid) for txid, _ in omitted_prevouts(transactions)})
     cache_dir = Path(cache_dir)
     if fetch:
         missing = sum(not (cache_dir / f"{txid}.bin").exists() for txid in needed)
@@ -128,3 +131,41 @@ def load_previous(transactions: Sequence[CTransaction], cache_dir: Path | str = 
         # Do not keep downloading the remaining catalogue after an error.
         pool.shutdown(wait=True, cancel_futures=True)
     return result
+
+
+def decode_confirmation(data: bytes, txid: str) -> tuple[int, str]:
+    """Read an Esplora status reply as (height, block hash); unconfirmed is not evidence."""
+    try:
+        payload = json.loads(data)
+    except ValueError as exc:
+        raise ValueError(f"malformed confirmation: {txid}") from exc
+    if not isinstance(payload, dict) or payload.get("confirmed") is not True:
+        raise ValueError(f"parent transaction {txid} is not confirmed")
+    height, block_hash = payload.get("block_height"), payload.get("block_hash")
+    if type(height) is not int or height < 0 or not isinstance(block_hash, str) or not BLOCK_HASH.fullmatch(block_hash):
+        raise ValueError(f"malformed confirmation: {txid}")
+    return height, block_hash.lower()
+
+
+def load_confirmation(txid: str, cache_dir: Path | str = PREVOUTS_DIR, fetch: bool = False,
+                      apis: Sequence[str] = DEFAULT_APIS) -> tuple[int, str]:
+    """Return where the API reported txid confirmed, as (height, block hash)."""
+    what = f"confirmation {txid}"
+    return _cached(what, Path(cache_dir) / f"{txid}.status.json", lambda data: decode_confirmation(data, txid),
+                   fetch, lambda: _fetch(what, apis, f"tx/{txid}/status", 65_536))
+
+
+def decode_block_hash(data: bytes, height: int) -> str:
+    """Read a block-height reply as a lowercase block hash."""
+    text = data.decode("ascii", errors="replace").strip()
+    if not BLOCK_HASH.fullmatch(text):
+        raise ValueError(f"malformed block hash for height {height}")
+    return text.lower()
+
+
+def load_canonical_hash(height: int, cache_dir: Path | str = PREVOUTS_DIR, fetch: bool = False,
+                        apis: Sequence[str] = DEFAULT_APIS) -> str:
+    """Return the block hash the API currently reports at height."""
+    what = f"block hash for height {height}"
+    return _cached(what, Path(cache_dir) / f"height-{height}.hash", lambda data: decode_block_hash(data, height),
+                   fetch, lambda: _fetch(what, apis, f"block-height/{height}", 256))
