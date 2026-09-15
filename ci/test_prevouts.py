@@ -8,8 +8,12 @@ import unittest
 from unittest.mock import patch
 from urllib.error import URLError
 
+from bitcoin.core import CBlock, CBlockHeader, b2lx
 from block_evidence import read_transaction, sha256d
-from prevouts import decode_previous, fetch_previous, load_canonical_hash, load_confirmation, load_previous
+from prevouts import (
+    PARENT_TXIDS_LIMIT, decode_parent_header, decode_parent_txids, decode_previous,
+    fetch_previous, load_canonical_hash, load_confirmation, load_parent_txids, load_previous,
+)
 from test_block_evidence import transaction
 
 
@@ -87,6 +91,54 @@ class PrevoutChecks(unittest.TestCase):
         self.assertFalse((self.cache / "height-5.hash").exists())
         with patch("prevouts.urlopen", return_value=BytesIO(b"AB" * 32)):
             self.assertEqual(load_canonical_hash(5, self.cache, fetch=True), "ab" * 32)
+
+    @patch("prevouts.time.sleep")
+    def test_parent_txid_cache_authenticates_header_and_merkle_root(self, sleep):
+        """Download authentic parent evidence, reuse it offline and reject corrupt or absent lists."""
+        txids = [b2lx(self.coinbase.GetTxid()), self.txid]
+        header = CBlockHeader(hashMerkleRoot=CBlock.build_merkle_tree_from_txids(
+            [self.coinbase.GetTxid(), self.spending.vin[0].prevout.hash])[-1])
+        block_hash = b2lx(header.GetHash())
+        with patch("prevouts.urlopen", side_effect=[
+                BytesIO(header.serialize().hex().encode()), BytesIO(json.dumps(txids).encode())]):
+            self.assertEqual(load_parent_txids(block_hash, self.cache, True), txids)
+        with patch("prevouts.urlopen", side_effect=AssertionError("network on cache hit")):
+            self.assertEqual(load_parent_txids(block_hash, self.cache), txids)
+        list_path = self.cache / f"{block_hash}.txids.json"
+        list_path.write_text(json.dumps(list(reversed(txids))))
+        with self.assertRaisesRegex(ValueError, "merkle root mismatch"):
+            load_parent_txids(block_hash, self.cache)
+        list_path.unlink()
+        with self.assertRaisesRegex(ValueError, "missing cached parent txids"):
+            load_parent_txids(block_hash, self.cache)
+        with patch("prevouts.urlopen", side_effect=URLError("down")):
+            with self.assertRaisesRegex(ValueError, "could not download parent txids"):
+                load_parent_txids(block_hash, self.cache, True, ("https://one.example/api",))
+        self.assertFalse(list_path.exists())
+        with patch("prevouts.urlopen", return_value=BytesIO(json.dumps(txids[::-1]).encode())):
+            with self.assertRaisesRegex(ValueError, "merkle root mismatch"):
+                load_parent_txids(block_hash, self.cache, True)
+        self.assertFalse(list_path.exists())
+
+    def test_parent_evidence_encoding_and_identity(self):
+        """Wrong byte order, duplicate leaves and malformed evidence cannot authenticate a parent."""
+        header = CBlockHeader(hashMerkleRoot=self.coinbase.GetTxid())
+        txid = b2lx(self.coinbase.GetTxid())
+        self.assertEqual(decode_parent_txids(json.dumps([txid]).encode(), header), [txid])
+        cases = {
+            "not an array": b'{}', "empty": b'[]', "bad txid": b'["not-a-txid"]',
+            "duplicate leaves": json.dumps([txid, txid]).encode(),
+            "wrong byte order": json.dumps([self.coinbase.GetTxid().hex()]).encode(),
+            "oversized": b' ' * (PARENT_TXIDS_LIMIT + 1),
+        }
+        for case, raw in cases.items():
+            with self.subTest(case=case), self.assertRaises(ValueError):
+                decode_parent_txids(raw, header)
+        for case, raw, identity in (
+                ("truncated", header.serialize()[:-1].hex().encode(), b2lx(header.GetHash())),
+                ("wrong hash", header.serialize().hex().encode(), "00" * 32)):
+            with self.subTest(case=case), self.assertRaises(ValueError):
+                decode_parent_header(raw, identity)
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@ per-input validation budget).
 from collections.abc import Mapping, Sequence
 from typing import TypeVar
 
-from bitcoin.core import CBlock, CoreMainParams, CTransaction, Hash as sha256d, b2lx
+from bitcoin.core import CBlock, CoreMainParams, CTransaction, Hash as sha256d, b2lx, lx
 from bitcoin.core.script import (
     CScript, CScriptInvalidError, CScriptOp, OP_1, OP_16,
     OP_CHECKSIG, OP_CHECKSIGVERIFY, OP_CHECKMULTISIG, OP_CHECKMULTISIGVERIFY,
@@ -103,6 +103,15 @@ def confirmed_at_or_after(confirmation: tuple[int, str], height: int, block_hash
     """
     confirmed_height, confirmed_hash = confirmation
     return confirmed_height >= height and confirmed_hash != block_hash
+
+
+def reuses_parent_transaction(block: CBlock, parent_txids: Sequence[str], txid: str) -> bool:
+    """Require the named transaction in both blocks, excluding both coinbases.
+
+    The caller authenticates the ordered parent list and its canonical height.
+    """
+    return (txid in parent_txids[1:]
+            and any(not tx.is_coinbase() and tx.GetTxid() == lx(txid) for tx in block.vtx[1:]))
 
 
 def establishes_rule(block: CBlock, rule: str) -> bool:

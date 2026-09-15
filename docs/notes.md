@@ -14,6 +14,43 @@ A node that already stores them returns `duplicate`, and only a node that attemp
 
 ## Incident notes
 
+### 507514, 509557, 515319 and 534339 - AntPool parent-transaction reuse (2018)
+
+Each block includes non-coinbase transactions already confirmed in the canonical parent named by its header.
+Those transactions' inputs were spent by the parent, so reusing them fails `ConnectBlock`'s input lookup with `bad-txns-inputs-missingorspent`.
+The dataset calls this `already_confirmed_in_parent`, separately from forward spends and missing unconfirmed parent transactions.
+
+| Height | Date (UTC) | Transactions reused from parent | Non-coinbase transactions in candidate |
+| --- | --- | ---: | ---: |
+| [507514](../blocks/507514-000000000000000000571c2b98a090c15774cb7400bd4a50b160d488d14055d0.bin) | 2018-02-04 | 338 | 737 |
+| [509557](../blocks/509557-00000000000000000027894f0969c2f79a6cdb1231750e048effbd17c88da431.bin) | 2018-02-17 | 1253 | 2322 |
+| [515319](../blocks/515319-00000000000000000014c1ee89b61a84e3e30dd9b2c78c9916d323a2775bc613.bin) | 2018-03-27 | 79 | 79 |
+| [534339](../blocks/534339-0000000000000000001a04286794b25ff10dfdb1bb601b17280dfc1ef933a0ba.bin) | 2018-07-30 | 218 | 218 |
+
+Block 515319 copies all 79 of its parent's non-coinbase transactions in the same order.
+Block 534339 contains a subset of its parent's transactions, in a different order; the other two mix parent transactions with transactions absent from that parent.
+All four coinbases contain `Mined by AntPool` tags.
+The pattern suggests a mining template whose previous-block hash was refreshed while some or all of its transaction list was retained.
+That is an inference from the bodies, not a recovered record of the pool's template construction.
+It is related to the 584802 AntPool incident, where the transaction list was dropped while fees remained in the coinbase; these blocks retain transactions from the parent instead.
+
+The pinned chainquery archive contains the hashes in [orphans_chainquery.com.json](https://github.com/NStifter/mergedmonitor/blob/54344d4e355f73eb94bef8d391e8fb6e4a9323a6/fork-analysis/chainquery.com/orphans_chainquery.com.json) and labels their tips `invalid` in [tips.json](https://github.com/NStifter/mergedmonitor/blob/54344d4e355f73eb94bef8d391e8fb6e4a9323a6/fork-analysis/chainquery.com/tips.json).
+Only the former is recorded as a scrape observation; the tip labels are background, not proof.
+The bodies were imported into stale-blocks in [abee96d](https://github.com/bitcoin-data/stale-blocks/commit/abee96d) without a recorded acquisition path, so they do not establish another observation or direct P2P reception.
+
+CI checks a named intersecting txid in each body against an ordered parent txid list authenticated by the parent's header merkle root, with a canonical-height lookup binding the parent to height minus one.
+All four pass python-bitcoinlib 0.12.2's context-free `CheckBlock` checks and the separate witness-commitment check.
+Those checks do not replay historical `ConnectBlock`.
+A separate replay did: on 17 September 2026 a Bitcoin Core v31.1.0 node, rewound to each block's parent with `invalidateblock`, returned `bad-txns-inputs-missingorspent` from `submitblock` for all four, naming the first reused transaction in each case.
+On the known mainnet chain after BIP34 activation, Core skips BIP30 checks below height 1983702; see the [BIP30 guard in validation.cpp](https://github.com/bitcoin/bitcoin/blob/bf8402c8803f085a50df96cb7956033cd252e9ab/src/validation.cpp#L2412).
+The named failure here is the reuse of spent inputs, not `bad-txns-BIP30`.
+
+The 2026-09-15 sweep of stale-blocks at [be1e859](https://github.com/bitcoin-data/stale-blocks/commit/be1e8597615c3372aab9ca437a9cd554822b6870) examined all 1086 bodies.
+Of the 1073 bodies extending canonical parents, only these four had a non-coinbase intersection; 1069 had none.
+Thirteen bodies extended noncanonical parents and were outside the rule's scope.
+There were no parse or retrieval failures.
+A negative intersection does not establish that a block satisfies every consensus rule.
+
 ### 74638 - value overflow (2010)
 
 `bad-txns-vout-toolarge` is the 2010 overflow incident ([CVE-2010-5139](https://en.bitcoin.it/wiki/Value_overflow_incident)).

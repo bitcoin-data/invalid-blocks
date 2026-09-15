@@ -1,4 +1,4 @@
-"""Fetch previous transactions, parent confirmations and canonical block hashes.
+"""Fetch transactions, confirmations, canonical hashes and authenticated parent txid lists.
 
 `{txid}.bin` is a stripped transaction, checked against its txid.
 `{txid}.status.json` is the Esplora status reply for that transaction, and
@@ -6,6 +6,8 @@
 are decoded and checked like downloads. Failed downloads and corrupt files
 fail the run, and a reply is stored only after it decodes as evidence, so an
 unconfirmed status is never cached.
+Parent headers are cached as hex in `{blockhash}.header`; their ordered
+`{blockhash}.txids.json` lists must reproduce the hash-verified header's merkle root.
 """
 
 from collections.abc import Callable, Sequence
@@ -19,13 +21,15 @@ import tempfile
 from typing import TypeVar
 from urllib.request import Request, urlopen
 
-from bitcoin.core import CTransaction, b2lx
+from bitcoin.core import CBlock, CBlockHeader, CTransaction, b2lx, lx
 
 from block_evidence import omitted_prevouts, read_transaction
 
 DEFAULT_APIS = ("https://mempool.space/api", "https://blockstream.info/api")
 PREVOUTS_DIR = Path(".cache/prevouts")
 BLOCK_HASH = re.compile(r"[0-9a-fA-F]{64}")
+TXID = re.compile(r"[0-9a-f]{64}")
+PARENT_TXIDS_LIMIT = 2 * 1024 * 1024
 T = TypeVar("T")
 
 
@@ -169,3 +173,44 @@ def load_canonical_hash(height: int, cache_dir: Path | str = PREVOUTS_DIR, fetch
     what = f"block hash for height {height}"
     return _cached(what, Path(cache_dir) / f"height-{height}.hash", lambda data: decode_block_hash(data, height),
                    fetch, lambda: _fetch(what, apis, f"block-height/{height}", 256))
+
+
+def decode_parent_header(data: bytes, block_hash: str) -> CBlockHeader:
+    """Decode an Esplora hex header and bind it to the requested parent hash."""
+    if len(data) > 256:
+        raise ValueError("oversized parent header")
+    raw = bytes.fromhex(data.decode("ascii", errors="replace").strip())
+    if len(raw) != 80:
+        raise ValueError("parent header must encode 80 bytes")
+    header = CBlockHeader.deserialize(raw)
+    if b2lx(header.GetHash()) != block_hash:
+        raise ValueError("parent header identity mismatch")
+    return header
+
+
+def decode_parent_txids(data: bytes, header: CBlockHeader) -> list[str]:
+    """Authenticate a complete, ordered txid list against the parent merkle root."""
+    if len(data) > PARENT_TXIDS_LIMIT:
+        raise ValueError("oversized parent txid list")
+    txids = json.loads(data)
+    if not isinstance(txids, list) or not txids or any(
+            not isinstance(txid, str) or not TXID.fullmatch(txid) for txid in txids):
+        raise ValueError("parent txid list must be a nonempty array of lowercase 64-hex strings")
+    # Repeated leaves can preserve a merkle root under Bitcoin's odd-leaf padding.
+    if len(set(txids)) != len(txids):
+        raise ValueError("duplicate transaction IDs in parent evidence")
+    if CBlock.build_merkle_tree_from_txids([lx(txid) for txid in txids])[-1] != header.hashMerkleRoot:
+        raise ValueError("parent transaction merkle root mismatch")
+    return txids
+
+
+def load_parent_txids(block_hash: str, cache_dir: Path | str = PREVOUTS_DIR, fetch: bool = False,
+                      apis: Sequence[str] = DEFAULT_APIS) -> list[str]:
+    """Load a hash-verified parent header and its merkle-authenticated txid list."""
+    cache = Path(cache_dir)
+    header = _cached(f"parent header {block_hash}", cache / f"{block_hash}.header",
+                     lambda data: decode_parent_header(data, block_hash), fetch,
+                     lambda: _fetch(f"parent header {block_hash}", apis, f"block/{block_hash}/header", 256))
+    return _cached(f"parent txids {block_hash}", cache / f"{block_hash}.txids.json",
+                   lambda data: decode_parent_txids(data, header), fetch,
+                   lambda: _fetch(f"parent txids {block_hash}", apis, f"block/{block_hash}/txids", PARENT_TXIDS_LIMIT))
