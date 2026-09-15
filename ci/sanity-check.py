@@ -23,10 +23,10 @@ from bitcoin.core.serialize import uint256_from_compact
 
 from block_evidence import (
     MAX_BLOCK_SIGOPS_COST, confirmed_at_or_after, establishes_rule, omitted_prevouts,
-    read_block, sigop_cost, verify_witness_commitment,
+    read_block, reuses_parent_transaction, sigop_cost, verify_witness_commitment,
 )
 from prevouts import (
-    DEFAULT_APIS, PREVOUTS_DIR, load_canonical_hash, load_confirmation, load_previous, load_transaction,
+    DEFAULT_APIS, PREVOUTS_DIR, load_canonical_hash, load_confirmation, load_parent_txids, load_previous, load_transaction,
 )
 
 DATA_PATH = Path("data/invalid-blocks.jsonl")
@@ -34,7 +34,7 @@ BLOCKS_DIR = Path("blocks")
 REQUIRED = {"height", "hash", "header", "prev_hash", "nTime", "core_reject_reason", "rule"}
 CONTEXT_FIELDS = {
     "expected_nbits", "parent_mtp", "coinbase_height", "coinbase_scriptsig_hex",
-    "pool", "pool_basis", "parent_kind", "missing_prevout",
+    "pool", "pool_basis", "parent_kind", "missing_prevout", "parent_txid",
 }
 OUTPOINT = re.compile(r"[0-9a-f]{64}:(?:0|[1-9][0-9]*)")
 OBSERVATION_REQUIRED = {"channel", "source", "provenance"}
@@ -47,13 +47,16 @@ POW_LIMIT = 0xFFFF << (8 * (0x1D - 3))
 
 # Evidence paths: local = header/context only; body = complete block file;
 # sigops = body plus previous transactions; missing_parent = body plus API
-# evidence for the recorded outpoint. Rule names and reject strings must
+# evidence for the recorded outpoint; parent_txid_reuse = body plus an
+# authenticated canonical parent txid list. Rule names and reject strings must
 # match docs/schema.md.
 RULES = {
     "bad-txns-vout-toolarge": ("bad-txns-vout-toolarge", (), "body"),
     "bad-blk-sigops": ("bad-blk-sigops", (), "sigops"),
     "bad-txns-inputs-missingorspent": ("bad-txns-inputs-missingorspent", (), "body"),
     "missing_unconfirmed_parent": ("bad-txns-inputs-missingorspent", ("missing_prevout",), "missing_parent"),
+    "already_confirmed_in_parent": ("bad-txns-inputs-missingorspent",
+        ("parent_txid", "parent_kind", "coinbase_height", "coinbase_scriptsig_hex"), "parent_txid_reuse"),
     "bip34_v2_coinbase_height_mismatch": (
         "bad-cb-height", ("coinbase_height", "coinbase_scriptsig_hex"), "local"),
     "bip34_coinbase_height_mismatch": (
@@ -170,6 +173,8 @@ def check_context(record: dict[str, Any]) -> None:
             raise ValueError(f"pool_basis must be one of {sorted(POOL_BASES)}")
     elif "pool_basis" in details:
         raise ValueError("pool_basis requires pool")
+    if "parent_txid" in details:
+        hex_value(details, "parent_txid", 32)
     if "missing_prevout" in details and not (
             isinstance(details["missing_prevout"], str) and OUTPOINT.fullmatch(details["missing_prevout"])):
         raise ValueError("missing_prevout must be txid:vout in lowercase hex")
@@ -254,6 +259,8 @@ def check_local_evidence(record: dict[str, Any], header: CBlockHeader) -> None:
     height = record["height"]
     version = header.nVersion
     script = bytes.fromhex(context["coinbase_scriptsig_hex"]) if "coinbase_scriptsig_hex" in context else None
+    if rule == "already_confirmed_in_parent" and context["coinbase_height"] != height:
+        raise ValueError("already_confirmed_in_parent requires coinbase_height equal to height")
     if script is not None and "coinbase_height" in context:
         if script_height(script) != context["coinbase_height"]:
             raise ValueError("coinbase_height does not match the scriptSig prefix")
@@ -283,6 +290,18 @@ def check_local_evidence(record: dict[str, Any], header: CBlockHeader) -> None:
         raise ValueError("coinbase scriptSig must exceed 100 bytes")
 
 
+def require_canonical_parent(record: dict[str, Any], prevouts_dir: Path | str, fetch_prevouts: bool,
+                             apis: Sequence[str]) -> str:
+    """Require prev_hash to be the block the API reports at the previous height."""
+    if record.get("context", {}).get("parent_kind", "canonical") != "canonical":
+        raise ValueError("parent_kind=canonical is required when the previous block is checked against the canonical chain")
+    previous_height = record["height"] - 1
+    canonical = load_canonical_hash(previous_height, prevouts_dir, fetch_prevouts, apis)
+    if canonical != record["prev_hash"]:
+        raise ValueError(f"prev_hash is not the canonical block at height {previous_height}")
+    return canonical
+
+
 def check_failure_evidence(record: dict[str, Any], block: CBlock | None, prevouts_dir: Path | str = PREVOUTS_DIR,
                            fetch_prevouts: bool = False, apis: Sequence[str] = DEFAULT_APIS) -> None:
     """Require a checked failure; observations cannot substitute for bytes."""
@@ -293,14 +312,16 @@ def check_failure_evidence(record: dict[str, Any], block: CBlock | None, prevout
         raise ValueError(f"{record['rule']} requires a complete block body")
     if mode == "body" and not establishes_rule(block, record["rule"]):
         raise ValueError(f"committed body does not demonstrate {record['rule']}")
+    if mode == "parent_txid_reuse":
+        require_canonical_parent(record, prevouts_dir, fetch_prevouts, apis)
+        parent_txids = load_parent_txids(record["prev_hash"], prevouts_dir, fetch_prevouts, apis)
+        if not reuses_parent_transaction(block, parent_txids, record["context"]["parent_txid"]):
+            raise ValueError("parent_txid is not a non-coinbase transaction in both the body and its parent")
     if mode == "missing_parent":
         txid, vout = record["context"]["missing_prevout"].split(":")
         if (lx(txid), int(vout)) not in omitted_prevouts(block.vtx):
             raise ValueError("missing_prevout is not spent by the body from outside the block")
-        previous_height = record["height"] - 1
-        canonical = load_canonical_hash(previous_height, prevouts_dir, fetch_prevouts, apis)
-        if canonical != record["prev_hash"]:
-            raise ValueError(f"prev_hash is not the canonical block at height {previous_height}")
+        canonical = require_canonical_parent(record, prevouts_dir, fetch_prevouts, apis)
         parent = load_transaction(txid, prevouts_dir, fetch_prevouts, apis)
         if int(vout) >= len(parent.vout):
             raise ValueError(f"missing_prevout output {vout} does not exist in the parent transaction")
@@ -309,7 +330,7 @@ def check_failure_evidence(record: dict[str, Any], block: CBlock | None, prevout
             raise ValueError("parent transaction is not confirmed at this height or later in another block")
         if fetch_prevouts:
             print(f"{record['height']}: parent {txid} currently confirmed at {confirmation[0]} "
-                  f"in {confirmation[1]}; canonical block at {previous_height} is {canonical}", flush=True)
+                  f"in {confirmation[1]}; canonical parent is {canonical}", flush=True)
     if mode == "sigops":
         # This checker uses BIP16 + BIP141 counting, not pre-SegWit rules.
         if record["height"] < 481824:
@@ -397,7 +418,7 @@ def check_dataset(path: Path | str = DATA_PATH, blocks_dir: Path | str = BLOCKS_
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fetch-prevouts", action="store_true",
-                        help="fetch missing sigops prevouts, parent confirmations and canonical block hashes from public APIs")
+                        help="fetch missing transactions, confirmations, canonical hashes and parent txid evidence from public APIs")
     parser.add_argument("--prevouts-dir", type=Path, default=PREVOUTS_DIR, help="verified transaction cache directory")
     parser.add_argument("--api-url", action="append", help="Esplora API base URL; repeat for fallback providers")
     args = parser.parse_args()
