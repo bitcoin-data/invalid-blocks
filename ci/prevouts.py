@@ -1,29 +1,95 @@
-"""Acquire previous transactions through Esplora-compatible public APIs.
+"""Fetch previous transactions, parent confirmations and canonical block hashes.
 
-Cache entries contain stripped transaction bytes, sufficient to authenticate
-output scripts against the txid committed in a spending input. Every cache hit
-is verified too. Downloads and cache corruption fail explicitly; there is no
-fallback to a claimed reject string or an unauthenticated scriptPubKey.
+`{txid}.bin` is a stripped transaction, checked against its txid.
+`{txid}.status.json` is the Esplora status reply for that transaction, and
+`height-{n}.hash` is the block hash Esplora reports at height n. Cache hits
+are decoded and checked like downloads. Failed downloads and corrupt files
+fail the run, and a reply is stored only after it decodes as evidence, so an
+unconfirmed status is never cached.
 """
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.client import HTTPException, IncompleteRead
+import json
 from pathlib import Path
+import re
 import time
 import tempfile
+from typing import TypeVar
 from urllib.request import Request, urlopen
 
 from bitcoin.core import CTransaction, b2lx
 
-from block_evidence import read_transaction
+from block_evidence import omitted_prevouts, read_transaction
 
 DEFAULT_APIS = ("https://mempool.space/api", "https://blockstream.info/api")
 PREVOUTS_DIR = Path(".cache/prevouts")
+BLOCK_HASH = re.compile(r"[0-9a-fA-F]{64}")
+T = TypeVar("T")
+
+
+def _get(url: str, limit: int) -> bytes:
+    """Download at most limit bytes. A truncated body raises."""
+    request = Request(url, headers={"User-Agent": "invalid-blocks-evidence-check/1"})
+    with urlopen(request, timeout=30) as response:
+        raw = response.read(limit + 1)
+    if len(raw) > limit:
+        raise ValueError(f"oversized response from {url}")
+    # urlopen can return a short body without raising. response.length is the
+    # remaining Content-Length.
+    remaining = getattr(response, "length", None)
+    if remaining:
+        raise IncompleteRead(raw, remaining)
+    return raw
+
+
+def _fetch(what: str, apis: Sequence[str], path: str, limit: int) -> bytes:
+    """Try each API up to twice on transport errors and return the first body."""
+    failures = []
+    for api in apis:
+        url = f"{api.rstrip('/')}/{path}"
+        for attempt in range(2):
+            try:
+                raw = _get(url, limit)
+                time.sleep(0.25)
+                return raw
+            except (OSError, HTTPException) as exc:
+                # urllib wraps connection setup errors, but resets and short
+                # HTTP reads can escape unwrapped after the response starts.
+                failures.append(f"{url}: {exc}")
+                if attempt == 0:
+                    time.sleep(2)
+    raise ValueError(f"could not download {what}: " + "; ".join(failures))
+
+
+def _replace(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as handle:
+        temporary = Path(handle.name)
+        try:
+            handle.write(data)
+            handle.close()
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+def _cached(what: str, path: Path, decode: Callable[[bytes], T], fetch: bool,
+            download: Callable[[], bytes]) -> T:
+    """Decode the cached file, or with fetch download it, decode it and then store it."""
+    if path.exists():
+        return decode(path.read_bytes())
+    if not fetch:
+        raise ValueError(f"missing cached {what}; run with --fetch-prevouts")
+    raw = download()
+    value = decode(raw)
+    _replace(path, raw)
+    return value
 
 
 def decode_previous(data: bytes, txid: str) -> CTransaction:
-    """Authenticate a complete transaction against the requested display txid."""
+    """Parse the transaction and require its txid to match."""
     transaction = read_transaction(data)
     if b2lx(transaction.GetTxid()) != txid:
         raise ValueError(f"previous transaction identity mismatch: {txid}")
@@ -31,77 +97,29 @@ def decode_previous(data: bytes, txid: str) -> CTransaction:
 
 
 def fetch_previous(txid: str, apis: Sequence[str] = DEFAULT_APIS) -> CTransaction:
-    """Fetch raw hex with bounded retries, provider fallback and HTTP timeouts.
+    """Download the raw transaction. A txid mismatch is terminal, not retried."""
+    raw = _fetch(f"previous transaction {txid}", apis, f"tx/{txid}/hex", 8_000_000)
+    return decode_previous(bytes.fromhex(raw.decode("ascii").strip()), txid)
 
-    Two workers call this function in parallel. Successful downloads are paced
-    and rate-limit/transient failures back off. Identity failures are terminal:
-    trying another provider must not conceal a wrong transaction response.
-    """
-    failures = []
-    for api in apis:
-        url = f"{api.rstrip('/')}/tx/{txid}/hex"
-        for attempt in range(2):
-            request = Request(url, headers={"User-Agent": "invalid-blocks-evidence-check/1"})
-            try:
-                with urlopen(request, timeout=30) as response:
-                    # Raw transaction size is bounded for this evidence path;
-                    # the limit also catches oversized error responses.
-                    raw = response.read(8_000_001)
-                if len(raw) > 8_000_000:
-                    raise ValueError(f"oversized previous transaction response: {txid}")
-                # read(amt) can return early without raising on a truncated
-                # Content-Length response. HTTPResponse tracks bytes still due.
-                remaining = getattr(response, "length", None)
-                if remaining:
-                    raise IncompleteRead(raw, remaining)
-                transaction = decode_previous(bytes.fromhex(raw.decode("ascii").strip()), txid)
-                time.sleep(0.25)
-                return transaction
-            except (OSError, HTTPException) as exc:
-                # urllib wraps connection setup errors, but resets and short
-                # HTTP reads can escape unwrapped after the response starts.
-                failures.append(f"{url}: {exc}")
-                if attempt == 0:
-                    time.sleep(2)
-    raise ValueError(f"could not download previous transaction {txid}: " + "; ".join(failures))
+
+def load_transaction(txid: str, cache_dir: Path | str = PREVOUTS_DIR, fetch: bool = False,
+                     apis: Sequence[str] = DEFAULT_APIS) -> CTransaction:
+    """Return the stripped transaction for one hex txid, from cache or the API."""
+    return _cached(f"previous transaction {txid}", Path(cache_dir) / f"{txid}.bin",
+                   lambda data: decode_previous(data, txid), fetch,
+                   lambda: fetch_previous(txid, apis).serialize({"include_witness": False}))
 
 
 def load_previous(transactions: Sequence[CTransaction], cache_dir: Path | str = PREVOUTS_DIR,
                   fetch: bool = False, apis: Sequence[str] = DEFAULT_APIS) -> dict[bytes, CTransaction]:
-    """Resolve external txids; earlier in-block outputs are handled by sigops.
-
-    The complete requested set is required for an exact count. Offline mode
-    reports missing evidence. Online mode writes only verified stripped bytes
-    using atomic replacement, so interrupted downloads cannot poison the cache.
-    """
-    own = {tx.GetTxid() for tx in transactions}
-    needed = sorted({b2lx(txin.prevout.hash) for tx in transactions[1:]
-                     for txin in tx.vin if txin.prevout.hash not in own})
+    """Load every external prevout transaction; spends of earlier in-block txs are not fetched."""
+    needed = sorted({b2lx(txid) for txid, _ in omitted_prevouts(transactions)})
     cache_dir = Path(cache_dir)
-
-    def load(txid: str) -> CTransaction:
-        path = cache_dir / f"{txid}.bin"
-        if path.exists():
-            return decode_previous(path.read_bytes(), txid)
-        if not fetch:
-            raise ValueError(f"missing cached previous transaction {txid}; run with --fetch-prevouts")
-        transaction = fetch_previous(txid, apis)
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(dir=cache_dir, delete=False) as handle:
-            temporary = Path(handle.name)
-            try:
-                handle.write(transaction.serialize({"include_witness": False}))
-                handle.close()
-                temporary.replace(path)
-            finally:
-                temporary.unlink(missing_ok=True)
-        return transaction
-
     if fetch:
         missing = sum(not (cache_dir / f"{txid}.bin").exists() for txid in needed)
         print(f"Previous transactions: {len(needed)} required, {missing} to download", flush=True)
     pool = ThreadPoolExecutor(max_workers=2)
-    futures = [pool.submit(load, txid) for txid in needed]
+    futures = [pool.submit(load_transaction, txid, cache_dir, fetch, apis) for txid in needed]
     result = {}
     try:
         for future in as_completed(futures):
@@ -113,3 +131,41 @@ def load_previous(transactions: Sequence[CTransaction], cache_dir: Path | str = 
         # Do not keep downloading the remaining catalogue after an error.
         pool.shutdown(wait=True, cancel_futures=True)
     return result
+
+
+def decode_confirmation(data: bytes, txid: str) -> tuple[int, str]:
+    """Read an Esplora status reply as (height, block hash); unconfirmed is not evidence."""
+    try:
+        payload = json.loads(data)
+    except ValueError as exc:
+        raise ValueError(f"malformed confirmation: {txid}") from exc
+    if not isinstance(payload, dict) or payload.get("confirmed") is not True:
+        raise ValueError(f"parent transaction {txid} is not confirmed")
+    height, block_hash = payload.get("block_height"), payload.get("block_hash")
+    if type(height) is not int or height < 0 or not isinstance(block_hash, str) or not BLOCK_HASH.fullmatch(block_hash):
+        raise ValueError(f"malformed confirmation: {txid}")
+    return height, block_hash.lower()
+
+
+def load_confirmation(txid: str, cache_dir: Path | str = PREVOUTS_DIR, fetch: bool = False,
+                      apis: Sequence[str] = DEFAULT_APIS) -> tuple[int, str]:
+    """Return where the API reported txid confirmed, as (height, block hash)."""
+    what = f"confirmation {txid}"
+    return _cached(what, Path(cache_dir) / f"{txid}.status.json", lambda data: decode_confirmation(data, txid),
+                   fetch, lambda: _fetch(what, apis, f"tx/{txid}/status", 65_536))
+
+
+def decode_block_hash(data: bytes, height: int) -> str:
+    """Read a block-height reply as a lowercase block hash."""
+    text = data.decode("ascii", errors="replace").strip()
+    if not BLOCK_HASH.fullmatch(text):
+        raise ValueError(f"malformed block hash for height {height}")
+    return text.lower()
+
+
+def load_canonical_hash(height: int, cache_dir: Path | str = PREVOUTS_DIR, fetch: bool = False,
+                        apis: Sequence[str] = DEFAULT_APIS) -> str:
+    """Return the block hash the API currently reports at height."""
+    what = f"block hash for height {height}"
+    return _cached(what, Path(cache_dir) / f"height-{height}.hash", lambda data: decode_block_hash(data, height),
+                   fetch, lambda: _fetch(what, apis, f"block-height/{height}", 256))
