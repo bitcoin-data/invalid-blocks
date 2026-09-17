@@ -6,8 +6,8 @@ from bitcoin.core import CBlock, COutPoint, CTransaction, CTxIn, CTxOut, CTxWitn
 from bitcoin.core.script import CScript, CScriptWitness, OP_TRUE
 
 from block_evidence import (
-    MAX_MONEY, confirmed_at_or_after, establishes_rule, omitted_prevouts, read_block, sha256d,
-    reuses_parent_transaction, sigop_count, witness_sigops,
+    MAX_MONEY, coinbase_amounts, confirmed_at_or_after, establishes_rule, omitted_prevouts, read_block, read_transaction,
+    reuses_parent_transaction, sha256d, sigop_count, witness_sigops,
 )
 
 
@@ -100,6 +100,49 @@ class BlockEvidenceChecks(unittest.TestCase):
         for name, body, parent, witness, expected in cases:
             with self.subTest(case=name):
                 self.assertEqual(reuses_parent_transaction(body, parent, witness), expected)
+
+
+class CoinbaseAmountChecks(unittest.TestCase):
+    def test_subsidy_boundaries(self):
+        """Require a strict overpayment, including halving and zero-subsidy boundaries."""
+        for height, subsidy in ((209999, 5_000_000_000), (210000, 2_500_000_000),
+                                (584802, 1_250_000_000), (64 * 210000, 0)):
+            for excess in (0, 1):
+                with self.subTest(height=height, excess=excess):
+                    body = read_block(block(transaction(amount=subsidy + excess)))
+                    self.assertEqual(coinbase_amounts(body, height, {}),
+                                     {"coinbase": subsidy + excess, "subsidy": subsidy,
+                                      "fees": 0, "excess": excess})
+
+    def test_authenticated_fees_and_in_block_spends(self):
+        """Account for external and earlier in-block outputs without fetching internal ones."""
+        parent = read_transaction(transaction(prev_hash=b"\x11" * 32, vout=0, amount=100)[0])
+        first = transaction(prev_hash=parent.GetTxid(), vout=0, amount=90)
+        second = transaction(prev_hash=sha256d(first[1]), vout=0, amount=80)
+        for excess in (0, 1):
+            with self.subTest(excess=excess):
+                body = read_block(block(transaction(amount=1_250_000_020 + excess), first, second))
+                amounts = coinbase_amounts(body, 584802, {parent.GetTxid(): parent})
+                self.assertEqual(amounts["fees"], 20)
+                self.assertEqual(amounts["excess"], excess)
+
+    def test_unusable_fee_evidence_raises(self):
+        """Missing, repeated or negative-fee inputs cannot prove overpayment."""
+        parent = read_transaction(transaction(prev_hash=b"\x11" * 32, vout=0, amount=100)[0])
+        first = transaction(prev_hash=parent.GetTxid(), vout=0, amount=90)
+        second = transaction(prev_hash=sha256d(first[1]), vout=0, amount=80)
+        previous = {parent.GetTxid(): parent}
+        cb = transaction(amount=1_250_000_021)
+        cases = {
+            "missing": (block(cb, first), {}, "missing previous output"),
+            "missing vout": (block(cb, transaction(prev_hash=parent.GetTxid(), vout=1)), previous, "missing previous output"),
+            "double spend": (block(cb, first, transaction(prev_hash=parent.GetTxid(), vout=0, amount=80)), previous, "repeated input"),
+            "negative fee": (block(cb, transaction(prev_hash=parent.GetTxid(), vout=0, amount=101)), previous, "negative fee"),
+            "negative output": (block(transaction(amount=-1)), {}, "money range"),
+        }
+        for case, (raw, prevouts, error) in cases.items():
+            with self.subTest(case=case), self.assertRaisesRegex(ValueError, error):
+                coinbase_amounts(read_block(raw), 584802, prevouts)
 
 
 class SigopChecks(unittest.TestCase):

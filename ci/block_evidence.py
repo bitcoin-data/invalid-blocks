@@ -16,7 +16,7 @@ per-input validation budget).
 from collections.abc import Mapping, Sequence
 from typing import TypeVar
 
-from bitcoin.core import CBlock, CoreMainParams, CTransaction, Hash as sha256d, b2lx, lx
+from bitcoin.core import COIN, CBlock, CoreMainParams, CTransaction, Hash as sha256d, MoneyRange, b2lx, lx
 from bitcoin.core.script import (
     CScript, CScriptInvalidError, CScriptOp, OP_1, OP_16,
     OP_CHECKSIG, OP_CHECKSIGVERIFY, OP_CHECKMULTISIG, OP_CHECKMULTISIGVERIFY,
@@ -177,6 +177,50 @@ def witness_sigops(program_script: bytes, witness: Sequence[bytes]) -> int:
     if script.is_witness_v0_scripthash() and witness:
         return sigop_count(witness[-1], accurate=True)
     return 0
+
+
+def coinbase_amounts(block: CBlock, height: int,
+                     previous_transactions: Mapping[bytes, CTransaction]) -> dict[str, int]:
+    """Compare coinbase value with mainnet subsidy plus authenticated input fees.
+
+    The caller binds the height and supplies txid-verified external
+    transactions; earlier non-coinbase in-block outputs can also fund fees.
+    This does not prove historical unspentness, maturity or script validity.
+    Ambiguous spends and invalid amounts fail instead of lowering the allowance.
+    """
+    subsidy = (50 * COIN) >> (height // CoreMainParams.SUBSIDY_HALVING_INTERVAL)
+    txids = [tx.GetTxid() for tx in block.vtx]
+    available = dict(previous_transactions)
+    spent = set()
+    fees = 0
+    for index, tx in enumerate(block.vtx):
+        output_value = sum(output.nValue for output in tx.vout)
+        if any(not MoneyRange(output.nValue) for output in tx.vout) or not MoneyRange(output_value):
+            raise ValueError("output value outside money range")
+        if index == 0:
+            coinbase_value = output_value
+            continue
+        input_value = 0
+        for txin in tx.vin:
+            txid, vout = txin.prevout.hash, txin.prevout.n
+            if (txid, vout) in spent:
+                raise ValueError("repeated input in fee evidence")
+            previous = available.get(txid)
+            if previous is None or vout >= len(previous.vout):
+                raise ValueError(f"missing previous output {b2lx(txid)}:{vout}")
+            value = previous.vout[vout].nValue
+            if not MoneyRange(value):
+                raise ValueError("previous output value outside money range")
+            input_value += value
+            spent.add((txid, vout))
+        if not MoneyRange(input_value) or input_value < output_value:
+            raise ValueError("invalid transaction input value or negative fee")
+        fees += input_value - output_value
+        if not MoneyRange(fees):
+            raise ValueError("total fees outside money range")
+        available[txids[index]] = tx
+    return {"coinbase": coinbase_value, "subsidy": subsidy, "fees": fees,
+            "excess": coinbase_value - subsidy - fees}
 
 
 def sigop_cost(block: CBlock, previous_transactions: Mapping[bytes, CTransaction]) -> dict[str, int]:

@@ -55,9 +55,12 @@ It checks JSONL structure, types, ordering, uniqueness, header hash, PoW and dec
 It enforces the rule/reject-string mapping, required context and rule-specific predicates.
 Validation reports the first error in each record, with its file and line number, then continues to the next record.
 Available block files must parse completely and match their transaction merkle roots and applicable witness commitments.
-CI checks output-value overflow, forward transaction spends, excessive sigop cost and transaction reuse from the canonical parent directly.
+CI checks output-value overflow, forward transaction spends, excessive sigop cost, transaction reuse from the canonical parent and coinbase overpayment directly.
 
-Sigops, missing-parent and parent-transaction reuse checks use a verified cache in `.cache/prevouts/`, restored between GitHub Actions runs.
+For coinbase overpayment, CI compares the coinbase output sum with the subsidy at the record height plus fees calculated from authenticated previous output values.
+Coinbase-only bodies have zero fees and need no previous transactions.
+
+Sigops, missing-parent, parent-transaction reuse and fee accounting checks use a verified cache in `.cache/prevouts/`, restored between GitHub Actions runs.
 Missing entries are fetched from public Esplora-compatible APIs when `--fetch-prevouts` is supplied.
 API failures, missing evidence and corrupt cache entries fail validation.
 After filling the cache, omit the flag for an offline run; `--prevouts-dir` selects another cache and `--api-url` selects an API base.
