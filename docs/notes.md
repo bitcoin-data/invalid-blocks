@@ -20,6 +20,15 @@ The records below attribute a pool another way, and `pool_basis` says which.
 474294 and 477115 are attributed to 1Hash from the [BitcoinTalk thread](https://bitcointalk.org/index.php?topic=2041607.0) of July 2017 that discussed both blocks; their coinbases carry `/NYA/` and no pool tag.
 226845, 226895 and 226912 are attributed to mmpool, Chris Double's [Bitparking merged-mining pool](https://bitcointalk.org/index.php?topic=57148.0) at mmpool.bitparking.com, from his [20 March 2013 post](https://bitcointalk.org/index.php?topic=57148.msg1646921#msg1646921) in that thread reporting three invalidated blocks that day, and the [bitcoin-dev log](https://buildingbitcoin.org/bitcoin-dev/log-2013-03-20.html) of the same day, where he reports the `block height mismatch in coinbase` rejection and names 226845; the later 367047 carries the `mmpool` tag itself.
 
+## Reported blocks
+
+`data/reported-blocks.jsonl` keeps ten blocks that were reported as invalid but cannot be admitted.
+Three Eligius blocks of September 2012 were reported as coinbase overpayments alongside the admitted 197438; 197883's header survives but its other transaction and fee do not, and 197701 and 197705 are known only by hash.
+P2Pool's 212048 is known from a December 2012 `InvalidChainFound` report and a node-history dump, without a header or a rejection reason.
+Five version-2 hashes from the BIP66 and BIP65 windows come from a March 2017 bitcoin-dev message and still lack headers.
+Bitcoin Unlimited's 450529 has a recovered header and a reported size of 1000023 bytes, but no body bytes to establish it.
+Issues labelled [`reported`](https://github.com/bitcoin-data/invalid-blocks/issues?q=label%3Areported) record what has already been searched for each incident and are the place to bring the missing header or body.
+
 ## Incident notes
 
 ### 507514, 509557, 515319 and 534339 - AntPool parent-transaction reuse (2018)

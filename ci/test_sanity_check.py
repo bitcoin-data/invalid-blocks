@@ -138,7 +138,7 @@ class DatasetChecks(unittest.TestCase):
         self.copy_evidence(self.record)
         path = self.root / "sigops.jsonl"
         path.write_text(json.dumps(self.record) + "\n")
-        problems, _ = CHECK.check_dataset(path, self.root / "blocks", self.root / "empty-cache")
+        problems = CHECK.check_dataset(path, self.root / "blocks", self.root / "empty-cache")[0]
         self.assertTrue(any("missing cached previous transaction" in p for p in problems))
 
     def test_missing_parent_requires_recorded_outpoint_and_cached_evidence(self):
@@ -257,6 +257,28 @@ class DatasetChecks(unittest.TestCase):
             self.copy_evidence(body)
             (self.root / "proofs" / f"{body['height']}-{body['hash']}.json").write_text(json.dumps(proof))
             self.assertTrue(any("not both" in p for p in self.validate([self.record, body])))
+
+    def test_reported_ledger(self):
+        """The real ledger passes; an admitted hash, a header that does not hash to its record, empty sources, disorder and a duplicate are rejected."""
+        rows = [json.loads(line) for line in CHECK.REPORTED_PATH.read_text().splitlines()]
+        established = {r["hash"] for r in self.records}
+        path = self.root / "reported.jsonl"
+
+        def check(content):
+            path.write_text("".join(json.dumps(row) + "\n" for row in content))
+            return CHECK.check_reported(path, established)[0]
+
+        self.assertEqual(check(rows), [])
+        cases = (
+            ("admitted hash", [dict(rows[0], hash=self.record["hash"])], "already an admitted record"),
+            ("wrong header", [dict(rows[0], header=self.record["header"])], "header hash mismatch"),
+            ("no sources", [dict(rows[0], sources=[])], "nonempty array"),
+            ("unsorted", [rows[1], rows[0]], "ordered by height"),
+            ("duplicate", [rows[0], rows[0]], "duplicate block hash"),
+        )
+        for case, content, error in cases:
+            with self.subTest(case=case):
+                self.assertTrue(any(error in p for p in check(content)))
 
     def test_body_matches_claimed_evidence(self):
         """Bind the named failure and supplied coinbase scriptSig to the available body."""

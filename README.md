@@ -14,6 +14,7 @@ This dataset covers blocks that fail those rules, including failures that can be
 - [`docs/notes.md`](docs/notes.md): replay behaviour and incident notes.
 - `blocks/{height}-{hash}.bin`: full block, when available.
 - `proofs/{height}-{hash}.json`: for a P2SH record without a body, the failing transaction and the block's ordered transaction IDs.
+- [`data/reported-blocks.jsonl`](data/reported-blocks.jsonl): blocks reported as invalid whose failure is not established.
 
 Merge-mined recoveries generally provide a header and coinbase rather than a full Bitcoin block.
 
@@ -26,6 +27,8 @@ The header must meet the PoW target encoded in its `nBits`.
 Include `context` fields needed to establish the failure: BIP34 coinbase height and scriptSig, `parent_mtp` for `time_below_mtp`, or `expected_nbits` for `nbits_retarget_not_applied`.
 Omit unknown optional fields.
 When the pool is known, give `pool` with `pool_basis`: `tag` for a coinbase tag, `address` for a payout address listed in [mining-pools](https://github.com/bitcoin-data/mining-pools), or `reported` when only a contemporaneous report names the pool.
+
+A block whose failure is only reported goes in [`data/reported-blocks.jsonl`](data/reported-blocks.jsonl) with its sources, until the evidence turns up.
 
 Include all available `observations`, with a source and provenance URL for each.
 Distinct child-chain blocks and independent observers remain separate observations.
