@@ -28,9 +28,7 @@ jobs:
         with:
           path: .cache/prevouts
           key: prevouts-v2-${{ hashFiles('blocks/*.bin') }}
-          restore-keys: |
-            prevouts-v2-
-            prevouts-v1-
+          restore-keys: prevouts-v2-
       - name: validate data and test validator
         run: |
           python -m venv .venv
