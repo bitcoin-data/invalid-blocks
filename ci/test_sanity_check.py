@@ -183,6 +183,30 @@ class DatasetChecks(unittest.TestCase):
                 self.record.pop("observations", None)
                 self.assertTrue(any("complete block body" in p for p in self.validate()))
 
+    def test_parent_reuse_requires_canonical_parent_and_matching_witness(self):
+        """Reject disjoint evidence, noncanonical parents, malformed witnesses and missing cache."""
+        self.record = self.for_rule("already_confirmed_in_parent")
+        self.copy_body(self.record)
+        parent = self.record["prev_hash"]
+        witness = self.record["context"]["parent_txid"]
+        cases = (
+            ("disjoint parent", parent, ["ab" * 32, "cd" * 32], "non-coinbase transaction"),
+            ("wrong canonical parent", "ab" * 32, ["cd" * 32, witness], "not the canonical block"),
+        )
+        for name, canonical, txids, error in cases:
+            with self.subTest(case=name), patch.object(CHECK, "load_canonical_hash", return_value=canonical), \
+                    patch.object(CHECK, "load_parent_txids", return_value=txids):
+                self.assertTrue(any(error in p for p in self.validate()))
+        for name, value, error in (
+                ("parent_txid", "AB" * 32, "lowercase hex"),
+                ("parent_kind", "stale", "parent_kind=canonical")):
+            with self.subTest(field=name), patch.dict(self.record["context"], {name: value}):
+                self.assertTrue(any(error in p for p in self.validate()))
+        cache = self.root / "cache"
+        cache.mkdir()
+        (cache / f"height-{self.record['height'] - 1}.hash").write_text(parent)
+        self.assertTrue(any("missing cached parent header" in p for p in self.validate(prevouts_dir=cache)))
+
     def test_body_matches_claimed_evidence(self):
         """Bind the named failure and supplied coinbase scriptSig to the available body."""
         self.record = self.for_rule("bad-txns-vout-toolarge")

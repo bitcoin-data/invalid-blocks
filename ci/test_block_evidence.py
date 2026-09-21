@@ -2,12 +2,12 @@
 
 import unittest
 
-from bitcoin.core import CBlock, COutPoint, CTransaction, CTxIn, CTxOut, CTxWitness, CTxInWitness
+from bitcoin.core import CBlock, COutPoint, CTransaction, CTxIn, CTxOut, CTxWitness, CTxInWitness, b2lx
 from bitcoin.core.script import CScript, CScriptWitness, OP_TRUE
 
 from block_evidence import (
     MAX_MONEY, confirmed_at_or_after, establishes_rule, omitted_prevouts, read_block, sha256d,
-    sigop_count, witness_sigops,
+    reuses_parent_transaction, sigop_count, witness_sigops,
 )
 
 
@@ -81,6 +81,25 @@ class BlockEvidenceChecks(unittest.TestCase):
         for case, wire in cases.items():
             with self.subTest(case=case), self.assertRaises(ValueError):
                 read_block(wire)
+
+    def test_parent_transaction_reuse_excludes_coinbases_and_absent_transactions(self):
+        """The named witness must be a non-coinbase transaction present in both blocks."""
+        coinbase = transaction()
+        reused = transaction(prev_hash=b"\x11" * 32, vout=0)
+        candidate = read_block(block(coinbase, reused))
+        txid = b2lx(candidate.vtx[1].GetTxid())
+        coinbase_id = b2lx(candidate.vtx[0].GetTxid())
+        cases = (
+            ("intersection", candidate, ["ab" * 32, txid], txid, True),
+            ("disjoint", candidate, ["ab" * 32, "cd" * 32], txid, False),
+            ("body coinbase", candidate, ["ab" * 32, coinbase_id], coinbase_id, False),
+            ("parent coinbase", candidate, [txid, "ab" * 32], txid, False),
+            ("absent from body", candidate, ["ab" * 32, "cd" * 32], "cd" * 32, False),
+            ("coinbase only", read_block(block(coinbase)), ["ab" * 32, txid], txid, False),
+        )
+        for name, body, parent, witness, expected in cases:
+            with self.subTest(case=name):
+                self.assertEqual(reuses_parent_transaction(body, parent, witness), expected)
 
 
 class SigopChecks(unittest.TestCase):

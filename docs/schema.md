@@ -6,7 +6,7 @@ Height is `prev + 1`, not a unique key: different blocks at the same height rema
 
 A block may enter the dataset only if its header meets its encoded PoW target and its named consensus failure has the evidence required below.
 Header/context rules use the supplied header and context.
-Body rules require a complete block; sigops and missing-parent rules additionally require evidence fetched from public APIs or verified cache entries.
+Body rules require a complete block; sigops, missing-parent and parent-transaction reuse rules additionally require evidence fetched from public APIs or verified cache entries.
 Observations document acquisition and incident history, but an explorer label or reported reject string cannot substitute for the evidence check.
 
 JSONL keeps each block's identity, optional context and repeated observations together.
@@ -41,12 +41,13 @@ Context is shared across observations; adding another witness does not duplicate
 | --- | --- | --- |
 | `expected_nbits` | string | Canonical compact target as eight hex characters. Required for `nbits_retarget_not_applied`. |
 | `parent_mtp` | integer | Parent median-time-past, the median of eleven block timestamps, in Unix seconds. Required for `time_below_mtp`. |
-| `coinbase_height` | integer | Height decoded from the BIP34 scriptSig prefix. Required for a BIP34 height mismatch. |
-| `coinbase_scriptsig_hex` | string | Coinbase input scriptSig. Required for BIP34 failures and `coinbase_scriptsig_length_above_100`. |
+| `coinbase_height` | integer | Height decoded from the BIP34 scriptSig prefix. Required for a BIP34 height mismatch and `already_confirmed_in_parent`. |
+| `coinbase_scriptsig_hex` | string | Coinbase input scriptSig. Required for BIP34 failures, `coinbase_scriptsig_length_above_100` and `already_confirmed_in_parent`. |
 | `pool` | string | Pool the block is attributed to, when known. Requires `pool_basis`. |
 | `pool_basis` | string | How the pool was identified: `tag` when the pool name appears as a tag in the coinbase scriptSig, `address` when the coinbase payout address is listed for the pool in [mining-pools](https://github.com/bitcoin-data/mining-pools), or `reported` when only a contemporaneous report names the pool. Required whenever `pool` is present and not allowed otherwise. Descriptive: CI checks the value, not the attribution. |
-| `parent_kind` | string | Chain status of the previous block: `canonical`, `stale`, or `invalid`. `invalid` means the previous block is in this dataset. Descriptive and unverified: CI checks the spelling, not the chain. |
+| `parent_kind` | string | Chain status of the previous block: `canonical`, `stale`, or `invalid`. `invalid` means the previous block is in this dataset. Descriptive, except that the rules which look up the canonical block at the previous height (`missing_unconfirmed_parent`, `already_confirmed_in_parent`) reject any other value. |
 | `missing_prevout` | string | Outpoint as `txid:vout`, spent by a non-coinbase input whose transaction is not in the block. Required for `missing_unconfirmed_parent`. |
+| `parent_txid` | string | Lowercase 64-hex txid of a non-coinbase transaction in both the candidate and its canonical parent. Required for `already_confirmed_in_parent`. |
 
 ## Optional `observations` array
 
@@ -96,6 +97,7 @@ Core functions live in [bitcoin/bitcoin](https://github.com/bitcoin/bitcoin):
 | `bad-blk-sigops` | `bad-blk-sigops` | `ConnectBlock` |
 | `bad-txns-inputs-missingorspent` | `bad-txns-inputs-missingorspent` | `ConnectBlock` via `CheckTxInputs` |
 | `missing_unconfirmed_parent` | `bad-txns-inputs-missingorspent` | `ConnectBlock` via `CheckTxInputs` |
+| `already_confirmed_in_parent` | `bad-txns-inputs-missingorspent` | `ConnectBlock` via `CheckTxInputs` |
 | `bip34_v2_coinbase_height_mismatch` | `bad-cb-height` | `ContextualCheckBlock` |
 | `bip34_coinbase_height_mismatch` | `bad-cb-height` | `ContextualCheckBlock` |
 | `bip34_coinbase_height_missing` | `bad-cb-height` | `ContextualCheckBlock` |
@@ -123,6 +125,7 @@ A provenance URL cannot bypass these requirements.
 | `bad-txns-vout-toolarge` | A complete block whose transactions contain an output above 21000000 BTC. |
 | `bad-txns-inputs-missingorspent` | A complete block containing a spend of an existing output of a later transaction in that block. A spend of a parent transaction absent from the block uses `missing_unconfirmed_parent`. |
 | `missing_unconfirmed_parent` | A complete block extending the block a public API reports at the previous height. The `missing_prevout` outpoint must be spent by an input in the block and created by a transaction not in the block, and the API must currently report that transaction confirmed in another block at this height or later. Unconfirmed or absent status is not evidence. |
+| `already_confirmed_in_parent` | A complete block whose named `parent_txid` is a non-coinbase transaction in both that body and its canonical parent. The parent's ordered txid list must reproduce the merkle root of a hash-verified parent header, and the canonical hash at height minus one must equal `prev_hash`. Require `parent_kind=canonical` and body-derived coinbase fields with `coinbase_height` equal to the record height. |
 | `bad-blk-sigops` | A complete block at mainnet height 481824 or later, authenticated previous transactions for every external input, and calculated BIP16/BIP141 sigop cost above 80000. |
 | `bip34_v2_coinbase_height_mismatch` | Both coinbase context fields, decoded height matching the scriptSig, and a scriptSig that lacks the exact expected BIP34 prefix. Header version must be at least 2 and height below 227931. Applicability of the historical rolling-version threshold still requires review. |
 | `bip34_coinbase_height_mismatch` | Both coinbase context fields, decoded height matching the scriptSig, and a scriptSig that lacks the exact expected BIP34 prefix, at height 227931 or later. A non-minimal encoding of the right number also fails the prefix check. |
@@ -142,7 +145,7 @@ At or after mainnet SegWit activation, witness data must match the coinbase witn
 
 The validator also checks JSONL structure, field types, decoded Bitcoin header identity, compact target and PoW, ordering, uniqueness and observation fields.
 Locally checked predicates establish consistency with the supplied context.
-Review must still establish the block height, parent MTP, expected difficulty, historical activation state, the chain status claimed in `parent_kind`, and the connection between an extracted coinbase script and its header when no complete body is available.
+Review must still establish the block height, parent MTP, expected difficulty, historical activation state, chain status where no canonical lookup is required, and the connection between an extracted coinbase script and its header when no complete body is available.
 The retarget check does not reconstruct the previous difficulty or prove that it was reused.
 CI does not execute scripts, validate child-chain commitments, reconstruct historical chain state or fetch observation provenance.
 It verifies the named failures, not every consensus rule or the exact first rejection a historical node would return.
@@ -199,3 +202,27 @@ Offline validation needs all three files in `.cache/prevouts/`.
 
 This check does not reconstruct a UTXO set or replay `ConnectBlock`, and it trusts the configured APIs for the confirmation and the canonical hash.
 Cached confirmation and block-hash entries are snapshots from their first fetch; delete them to re-check.
+
+## Transactions already confirmed in the parent
+
+`already_confirmed_in_parent` identifies reuse of a non-coinbase transaction from the canonical previous block.
+That transaction has already consumed its inputs, so including it again fails the input availability check.
+This differs from an in-block forward spend and from a missing unconfirmed parent transaction; all three share `bad-txns-inputs-missingorspent` as their reject-string family.
+The body must contain the named `parent_txid`, and neither the body's coinbase nor the parent's coinbase may serve as the witness.
+
+`ci/prevouts.py` fetches `/block/{prev_hash}/header` as hex and requires exactly 80 decoded bytes whose header hash equals `prev_hash`.
+It fetches `/block/{prev_hash}/txids` as a nonempty JSON array of 64-hex transaction IDs, rejecting duplicates.
+Converting the ordered IDs from display byte order and rebuilding their merkle tree must reproduce the header's merkle root.
+The first list entry is the canonical parent's coinbase and is excluded from membership checks.
+This binds the list contents to the parent without downloading its full body.
+The `/block-height/{height-1}` response must also equal `prev_hash`; the canonical-chain assertion is trusted API context, not proved by a header alone.
+
+The cache stores the header's hex response as `{prev_hash}.header`, the ordered list as `{prev_hash}.txids.json`, and the canonical hash as `height-{height-1}.hash`.
+Header downloads are limited to 256 bytes and txid-list downloads to 2 MiB.
+Both cached and downloaded evidence undergo the same checks; missing or corrupt evidence fails validation.
+`--fetch-prevouts` permits downloads, and a warmed cache supports offline checks.
+CI uses a `prevouts-v2-` cache prefix with older `prevouts-v1-` archives retained as a restore fallback, since the new files do not replace the existing evidence formats.
+The cache retention and scheduled-workflow limits described above also apply to these files.
+
+The checker considers only the immediate canonical parent, not older ancestors or the UTXO set, and does not execute scripts or replay historical `ConnectBlock`.
+Canonical hashes remain snapshots from their first fetch, as in the missing-parent check.
