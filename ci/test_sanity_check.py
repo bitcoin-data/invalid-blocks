@@ -114,6 +114,18 @@ class DatasetChecks(unittest.TestCase):
                     del self.record["context"][field]
                     self.assertTrue(any("requires" in p for p in self.validate()))
 
+    def test_coinbase_overpayment_evidence(self):
+        """Prove 584802 with no previous transactions, then both overpayments from the cached fee evidence."""
+        records = {r["height"]: copy.deepcopy(r) for r in self.records if r["rule"] == "bad-cb-amount"}
+        self.record = records[584802]
+        self.copy_body(self.record)
+        cache = self.root / "empty-cache"
+        with patch.object(CHECK, "load_canonical_hash", return_value=self.record["prev_hash"]), \
+                patch("prevouts.urlopen", side_effect=AssertionError("unnecessary download")):
+            self.assertEqual(self.validate(prevouts_dir=cache), [])
+        self.copy_body(records[197438])
+        self.assertEqual(self.validate([records[197438], self.record]), [])
+
     def test_sigops_requires_previous_transactions(self):
         """A complete sigops block still fails admission when previous transactions are missing."""
         self.record = self.for_rule("bad-blk-sigops")

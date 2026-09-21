@@ -22,7 +22,7 @@ from bitcoin.core.script import CScript, CScriptInvalidError, OP_1NEGATE
 from bitcoin.core.serialize import uint256_from_compact
 
 from block_evidence import (
-    MAX_BLOCK_SIGOPS_COST, confirmed_at_or_after, establishes_rule, omitted_prevouts,
+    MAX_BLOCK_SIGOPS_COST, coinbase_amounts, confirmed_at_or_after, establishes_rule, omitted_prevouts,
     read_block, reuses_parent_transaction, sigop_cost, verify_witness_commitment,
 )
 from prevouts import (
@@ -48,11 +48,14 @@ POW_LIMIT = 0xFFFF << (8 * (0x1D - 3))
 # Evidence paths: local = header/context only; body = complete block file;
 # sigops = body plus previous transactions; missing_parent = body plus API
 # evidence for the recorded outpoint; parent_txid_reuse = body plus an
-# authenticated canonical parent txid list. Rule names and reject strings must
+# authenticated canonical parent txid list; cb_amount = body plus canonical
+# parent and fee prevouts.
+# Rule names and reject strings must
 # match docs/schema.md.
 RULES = {
     "bad-txns-vout-toolarge": ("bad-txns-vout-toolarge", (), "body"),
     "bad-blk-sigops": ("bad-blk-sigops", (), "sigops"),
+    "bad-cb-amount": ("bad-cb-amount", ("coinbase_scriptsig_hex", "parent_kind"), "cb_amount"),
     "bad-txns-inputs-missingorspent": ("bad-txns-inputs-missingorspent", (), "body"),
     "missing_unconfirmed_parent": ("bad-txns-inputs-missingorspent", ("missing_prevout",), "missing_parent"),
     "already_confirmed_in_parent": ("bad-txns-inputs-missingorspent",
@@ -317,6 +320,15 @@ def check_failure_evidence(record: dict[str, Any], block: CBlock | None, prevout
         parent_txids = load_parent_txids(record["prev_hash"], prevouts_dir, fetch_prevouts, apis)
         if not reuses_parent_transaction(block, parent_txids, record["context"]["parent_txid"]):
             raise ValueError("parent_txid is not a non-coinbase transaction in both the body and its parent")
+    if mode == "cb_amount":
+        require_canonical_parent(record, prevouts_dir, fetch_prevouts, apis)
+        previous = load_previous(block.vtx, prevouts_dir, fetch_prevouts, apis)
+        amounts = coinbase_amounts(block, record["height"], previous)
+        if amounts["excess"] <= 0:
+            raise ValueError("coinbase value does not exceed subsidy plus fees")
+        if fetch_prevouts:
+            print(f"{record['height']}: coinbase {amounts['coinbase']}, subsidy {amounts['subsidy']}, "
+                  f"fees {amounts['fees']}, excess {amounts['excess']} sat", flush=True)
     if mode == "missing_parent":
         txid, vout = record["context"]["missing_prevout"].split(":")
         if (lx(txid), int(vout)) not in omitted_prevouts(block.vtx):

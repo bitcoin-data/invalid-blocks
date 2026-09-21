@@ -8,7 +8,7 @@ Deeper per-block history is documented elsewhere; see the observation `provenanc
 A `.bin` can be replayed with `bitcoin-cli submitblock`, but what comes back depends on where the violation is caught.
 74638 fails the context-free `CheckBlock` checks before anything is stored, so every replay returns `bad-txns-vout-toolarge` on any node.
 Its header alone is valid, though: `submitheader` accepts it (noted in <https://github.com/bitcoin-data/stale-blocks/pull/65>), since every header-level check passes and the violation lives entirely in the body.
-The transaction-ordering blocks, 474294 and the 2023 sigops blocks fail in `ConnectBlock`, which a node only runs when it is about to extend its active chain with the block.
+The transaction-ordering blocks, 474294, the two coinbase overpayments and the 2023 sigops blocks fail in `ConnectBlock`, which a node only runs when it is about to extend its active chain with the block.
 Replayed today they sit on a branch with less work than the tip, so a node seeing them fresh stores them after the context-free checks and never connects them: `submitblock` returns `inconclusive` and the block becomes a `valid-headers` chain tip.
 A node that already stores them returns `duplicate`, and only a node that attempted the connect at their original tip and marked them failed returns `duplicate-invalid` (the result reported in <https://github.com/bitcoin-data/stale-blocks/pull/11>).
 
@@ -91,3 +91,24 @@ The 80-byte header comes from a blockchain.info block dump preserved in the [BTC
 The [dump's](https://github.com/crossclaim/btcrelay-sol/blob/1cf676d387c4514770b91e4ca15094194f446677/test/testdata/old_headers/fork/20150704/363731.json) 99 transaction IDs reproduce the header's merkle root, and its coinbase fields reserialize to the first of those IDs, which ties the recorded scriptSig to the header.
 The coinbase pays `1BwZeHJo7b7M2op7VDfYnsmcpXsUYEcVHm`, the address [mining-pools](https://github.com/bitcoin-data/mining-pools/blob/af720b67faa2f157264db33c644eb1b0fa95af5f/pools/btc-nuggets.json) lists for BTC Nuggets; the scriptSig tags are `/P2SH/` and `/stratumPool/`, so the attribution is by address.
 A [16 March 2017 bitcoin-dev message](https://gnusha.org/pi/bitcoindev/48d3940ab1a2bd53c6e056ce7fbcd361@cock.lu/) lists this hash among blocks a node rejected with `bad-version(0x00000002)`.
+### 584802 - AntPool coinbase overpayment (2019)
+
+The [334-byte body](../blocks/584802-0000000000000000000b47042b90c6a893e6e5cdef70c92beefb88f4c5fa5a69.bin) contains only its coinbase, which pays 1326546691 satoshis against the 1250000000 subsidy: no fees, an excess of 76546691 satoshis (0.76546691 BTC).
+Header hash, proof of work, merkle root, witness commitment and BIP34 height reproduce from the body, and the coinbase carries `Mined by AntPool112`.
+Its parent is canonical 584801, `0000000000000000001b253b1fac766189e15d7f7078191002e5427ac7b8f9f1`, which CI checks against the API's block hash at that height.
+
+The header entered stale-blocks through the [2022 chainquery.com getchaintips import](https://github.com/bitcoin-data/stale-blocks/commit/97db32bf74481da71d0893ac37152a3a9479424d) and the body in commit `abee96d`, which does not record how it was acquired, so no P2P observation is claimed.
+The binary is preserved byte-for-byte, SHA-256 `08e6fb81bc61db0836d8726f9fe40459fc5a9d3f3e64621a74b21b2af4d48df0`.
+Elastos child 419444 independently witnesses the parent; its Research provenance records acquisition, not the verdict.
+
+### 197438 - Eligius coinbase overpayment (2012)
+
+The [1890-byte body](../blocks/197438-0000000000000307872ec2eb0eae2dca3ed9ce6af9e024412cb3ddfe8afd12a7.bin) holds the coinbase and one ordinary transaction.
+The coinbase pays 5001000000 satoshis against the 5000000000 subsidy.
+The transaction spends output 1 of `8d86cbc5bf98ae815b9f360d0ac208109a75ab7988fc33276fe1eebe46e7fd8f`, confirmed at canonical 197333 and worth 503413843 satoshis, and pays out exactly that, so the fee is zero and the excess is 1000000 satoshis (0.01 BTC).
+The block predates BIP34, so the height is bound by the canonical parent at 197437, `000000000000008cb385de6a68aaaaa6c3974b98cf8f544b8cce0db1855256c4`, not by a coinbase prefix; the coinbase tag is `Eligius`.
+
+The body is a reconstruction: header and coinbase from the AuxPoW record in Ixcoin block 91289, the transaction from its later confirmation at canonical 197523; the two txids reproduce the merkle root.
+Luke-Jr's node log, pasted to bitcoin-dev IRC on [9 September 2012](https://buildingbitcoin.org/bitcoin-dev/log-2012-09-09.html), reports `InvalidChainFound` for this block and three other Eligius blocks, 197701, 197705 and 197883, whose bodies remain missing.
+Core's check then and now is the same subsidy-plus-fees comparison.
+stale-blocks [PR #139](https://github.com/bitcoin-data/stale-blocks/pull/139) added the header as a stale block; it is invalid, not stale, and is removed there once this record is published.

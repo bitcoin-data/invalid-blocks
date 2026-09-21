@@ -6,7 +6,7 @@ Height is `prev + 1`, not a unique key: different blocks at the same height rema
 
 A block may enter the dataset only if its header meets its encoded PoW target and its named consensus failure has the evidence required below.
 Header/context rules use the supplied header and context.
-Body rules require a complete block; sigops, missing-parent and parent-transaction reuse rules additionally require evidence fetched from public APIs or verified cache entries.
+Body rules require a complete block; sigops, missing-parent, parent-transaction reuse and fee accounting rules additionally require evidence fetched from public APIs or verified cache entries.
 Observations document acquisition and incident history, but an explorer label or reported reject string cannot substitute for the evidence check.
 
 JSONL keeps each block's identity, optional context and repeated observations together.
@@ -95,6 +95,7 @@ Core functions live in [bitcoin/bitcoin](https://github.com/bitcoin/bitcoin):
 | --- | --- | --- |
 | `bad-txns-vout-toolarge` | `bad-txns-vout-toolarge` | `CheckTransaction` |
 | `bad-blk-sigops` | `bad-blk-sigops` | `ConnectBlock` |
+| `bad-cb-amount` | `bad-cb-amount` | `ConnectBlock` |
 | `bad-txns-inputs-missingorspent` | `bad-txns-inputs-missingorspent` | `ConnectBlock` via `CheckTxInputs` |
 | `missing_unconfirmed_parent` | `bad-txns-inputs-missingorspent` | `ConnectBlock` via `CheckTxInputs` |
 | `already_confirmed_in_parent` | `bad-txns-inputs-missingorspent` | `ConnectBlock` via `CheckTxInputs` |
@@ -123,6 +124,7 @@ A provenance URL cannot bypass these requirements.
 | Rule | Required evidence and check |
 | --- | --- |
 | `bad-txns-vout-toolarge` | A complete block whose transactions contain an output above 21000000 BTC. |
+| `bad-cb-amount` | A complete block extending the block a public API reports at the previous height, whose coinbase pays strictly more than the mainnet subsidy at that height plus fees calculated from authenticated previous transactions. A coinbase-only body has no fees to fetch. |
 | `bad-txns-inputs-missingorspent` | A complete block containing a spend of an existing output of a later transaction in that block. A spend of a parent transaction absent from the block uses `missing_unconfirmed_parent`. |
 | `missing_unconfirmed_parent` | A complete block extending the block a public API reports at the previous height. The `missing_prevout` outpoint must be spent by an input in the block and created by a transaction not in the block, and the API must currently report that transaction confirmed in another block at this height or later. Unconfirmed or absent status is not evidence. |
 | `already_confirmed_in_parent` | A complete block whose named `parent_txid` is a non-coinbase transaction in both that body and its canonical parent. The parent's ordered txid list must reproduce the merkle root of a hash-verified parent header, and the canonical hash at height minus one must equal `prev_hash`. Require `parent_kind=canonical` and body-derived coinbase fields with `coinbase_height` equal to the record height. |
@@ -226,3 +228,16 @@ The cache retention and scheduled-workflow limits described above also apply to 
 
 The checker considers only the immediate canonical parent, not older ancestors or the UTXO set, and does not execute scripts or replay historical `ConnectBlock`.
 Canonical hashes remain snapshots from their first fetch, as in the missing-parent check.
+
+## Coinbase amount evidence
+
+`bad-cb-amount` compares the sum of the coinbase outputs with the mainnet subsidy plus the block's fees.
+The subsidy starts at 50 BTC and halves every 210000 blocks.
+The height sets the subsidy, so the rule binds it as the missing-parent and parent-reuse rules do: the API's block hash at `height - 1`, cached as `height-{height-1}.hash`, must equal `prev_hash`.
+No BIP34 prefix is required, which admits blocks from before that rule; a supplied `coinbase_height` must still match the scriptSig.
+
+A coinbase-only block has zero fees and needs no previous transactions.
+Otherwise `ci/prevouts.py` loads every external input's transaction and verifies its txid before its output value is used; earlier transactions in the body supply internal outputs, and later ones and the coinbase cannot.
+Fees are inputs minus outputs, never an explorer's fee field.
+Missing outputs, repeated spends, money-range violations and negative fees are errors, and a coinbase that pays exactly the subsidy plus fees is not admitted.
+Authenticated bytes establish output values, not historical unspentness, coinbase maturity or script validity; this is not a `ConnectBlock` replay.
