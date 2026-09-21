@@ -27,7 +27,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: .cache/prevouts
-          key: prevouts-v2-${{ hashFiles('blocks/*.bin') }}
+          key: prevouts-v2-${{ hashFiles('blocks/*.bin', 'proofs/*.json') }}
           restore-keys: prevouts-v2-
       - name: validate data and test validator
         run: |

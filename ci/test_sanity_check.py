@@ -10,6 +10,8 @@ from unittest.mock import patch
 
 from bitcoin.core import CBlock, CBlockHeader
 
+from test_block_evidence import P2SH_FUNDING
+
 SPEC = importlib.util.spec_from_file_location("sanity_check", Path(__file__).with_name("sanity-check.py"))
 CHECK = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CHECK)
@@ -28,18 +30,22 @@ class DatasetChecks(unittest.TestCase):
     def for_rule(self, rule):
         return copy.deepcopy(next(r for r in self.records if r["rule"] == rule))
 
-    def copy_body(self, record):
-        blocks = self.root / "blocks"
-        blocks.mkdir(exist_ok=True)
-        name = f"{record['height']}-{record['hash']}.bin"
-        path = blocks / name
-        path.write_bytes((CHECK.BLOCKS_DIR / name).read_bytes())
-        return path
+    def for_height(self, height):
+        return copy.deepcopy(next(r for r in self.records if r["height"] == height))
+
+    def copy_evidence(self, record, kind="block"):
+        """Copy the record's body (.bin under blocks) or proof (.json under proofs) into the temp tree."""
+        source, folder, suffix = {"block": (CHECK.BLOCKS_DIR, "blocks", ".bin"), "proof": (CHECK.PROOFS_DIR, "proofs", ".json")}[kind]
+        target = self.root / folder
+        target.mkdir(exist_ok=True)
+        name = f"{record['height']}-{record['hash']}{suffix}"
+        (target / name).write_bytes((source / name).read_bytes())
+        return target / name
 
     def validate(self, records=None, prevouts_dir=CHECK.PREVOUTS_DIR):
         path = self.root / "data.jsonl"
         path.write_text("".join(json.dumps(record) + "\n" for record in (records or [self.record])))
-        return CHECK.check_dataset(path, self.root / "blocks", prevouts_dir)[0]
+        return CHECK.check_dataset(path, self.root / "blocks", prevouts_dir, proofs_dir=self.root / "proofs")[0]
 
     def test_documented_sigops_breakdowns(self):
         """Reproduce both F2Pool blocks' documented legacy, P2SH and witness costs."""
@@ -50,7 +56,7 @@ class DatasetChecks(unittest.TestCase):
             784121: {"legacy": 72204, "p2sh": 908, "witness": 6891, "total": 80003},
         }
         for height, costs in expected.items():
-            record = next(r for r in self.records if r["height"] == height)
+            record = self.for_height(height)
             path = CHECK.BLOCKS_DIR / f"{height}-{record['hash']}.bin"
             block = CHECK.read_block(path.read_bytes())
             previous = CHECK.load_previous(block.vtx)
@@ -118,18 +124,18 @@ class DatasetChecks(unittest.TestCase):
         """Prove 584802 with no previous transactions, then both overpayments from the cached fee evidence."""
         records = {r["height"]: copy.deepcopy(r) for r in self.records if r["rule"] == "bad-cb-amount"}
         self.record = records[584802]
-        self.copy_body(self.record)
+        self.copy_evidence(self.record)
         cache = self.root / "empty-cache"
         with patch.object(CHECK, "load_canonical_hash", return_value=self.record["prev_hash"]), \
                 patch("prevouts.urlopen", side_effect=AssertionError("unnecessary download")):
             self.assertEqual(self.validate(prevouts_dir=cache), [])
-        self.copy_body(records[197438])
+        self.copy_evidence(records[197438])
         self.assertEqual(self.validate([records[197438], self.record]), [])
 
     def test_sigops_requires_previous_transactions(self):
         """A complete sigops block still fails admission when previous transactions are missing."""
         self.record = self.for_rule("bad-blk-sigops")
-        self.copy_body(self.record)
+        self.copy_evidence(self.record)
         path = self.root / "sigops.jsonl"
         path.write_text(json.dumps(self.record) + "\n")
         problems, _ = CHECK.check_dataset(path, self.root / "blocks", self.root / "empty-cache")
@@ -138,7 +144,7 @@ class DatasetChecks(unittest.TestCase):
     def test_missing_parent_requires_recorded_outpoint_and_cached_evidence(self):
         """The body must spend the recorded outpoint, the previous block must be canonical, and evidence must be cached."""
         self.record = self.for_rule("missing_unconfirmed_parent")
-        self.copy_body(self.record)
+        self.copy_evidence(self.record)
         cache = self.root / "cache"
         cache.mkdir()
         canonical = cache / f"height-{self.record['height'] - 1}.hash"
@@ -174,7 +180,7 @@ class DatasetChecks(unittest.TestCase):
     def test_body_witness_mutation_is_detected_before_sigop_counting(self):
         """Changed witness bytes must fail commitment checks before prevout acquisition."""
         self.record = self.for_rule("bad-blk-sigops")
-        path = self.copy_body(self.record)
+        path = self.copy_evidence(self.record)
         original = path.read_bytes()
         block = CHECK.read_block(original)
         item = next(item for tx in block.vtx[1:] for txinwit in tx.wit.vtxinwit for item in txinwit.scriptWitness.stack if len(item) > 40)
@@ -198,7 +204,7 @@ class DatasetChecks(unittest.TestCase):
     def test_parent_reuse_requires_canonical_parent_and_matching_witness(self):
         """Reject disjoint evidence, noncanonical parents, malformed witnesses and missing cache."""
         self.record = self.for_rule("already_confirmed_in_parent")
-        self.copy_body(self.record)
+        self.copy_evidence(self.record)
         parent = self.record["prev_hash"]
         witness = self.record["context"]["parent_txid"]
         cases = (
@@ -221,8 +227,8 @@ class DatasetChecks(unittest.TestCase):
 
     def test_p2sh_failure_requires_named_spend_after_activation(self):
         """Admit a P2SH body from cached evidence; reject an unspent outpoint, a pre-BIP16 time and a missing cache."""
-        self.record = self.for_rule("p2sh_redeem_script_failure")
-        self.copy_body(self.record)
+        self.record = self.for_height(173928)
+        self.copy_evidence(self.record)
         self.assertEqual(self.validate(), [])
         with self.subTest(case="outpoint not spent"), patch.dict(self.record["context"], {"failing_prevout": "00" * 32 + ":0"}):
             self.assertTrue(any("exactly one input" in p for p in self.validate()))
@@ -231,10 +237,31 @@ class DatasetChecks(unittest.TestCase):
         with self.subTest(case="missing cache"):
             self.assertTrue(any("missing cached" in p for p in self.validate(prevouts_dir=self.root / "empty")))
 
+    def test_p2sh_proof_stands_in_for_a_missing_body(self):
+        """Admit a proof-only P2SH record, and reject a proof beside a body, a foreign transaction and a wrong list."""
+        self.record = self.for_height(173886)
+        path = self.copy_evidence(self.record, "proof")
+        proof = json.loads(path.read_text())
+        self.assertEqual(self.validate(), [])
+        cases = (
+            ("foreign transaction", dict(proof, transaction=P2SH_FUNDING.hex()), "not in the block's txid list"),
+            ("wrong list", dict(proof, txids=proof["txids"][::-1]), "merkle root mismatch"),
+        )
+        for case, content, error in cases:
+            with self.subTest(case=case):
+                path.write_text(json.dumps(content))
+                self.assertTrue(any(error in p for p in self.validate()))
+        path.write_text(json.dumps(proof))
+        with self.subTest(case="proof beside body"):
+            body = self.for_height(173928)
+            self.copy_evidence(body)
+            (self.root / "proofs" / f"{body['height']}-{body['hash']}.json").write_text(json.dumps(proof))
+            self.assertTrue(any("not both" in p for p in self.validate([self.record, body])))
+
     def test_body_matches_claimed_evidence(self):
         """Bind the named failure and supplied coinbase scriptSig to the available body."""
         self.record = self.for_rule("bad-txns-vout-toolarge")
-        self.copy_body(self.record)
+        self.copy_evidence(self.record)
         cases = (
             ("wrong failure", {"rule": "bad-txns-inputs-missingorspent",
                                "core_reject_reason": "bad-txns-inputs-missingorspent"}, "does not demonstrate"),
@@ -247,7 +274,7 @@ class DatasetChecks(unittest.TestCase):
     def test_body_parse_error_is_reported(self):
         """Propagate a parser error without also claiming that the available body is absent."""
         self.record = self.for_rule("bad-txns-vout-toolarge")
-        path = self.copy_body(self.record)
+        path = self.copy_evidence(self.record)
         path.write_bytes(path.read_bytes()[:-1])
         problems = self.validate()
         self.assertTrue(any("truncated" in p for p in problems))
@@ -322,12 +349,16 @@ class DatasetChecks(unittest.TestCase):
         self.assertEqual(CHECK.target_from_bits(0x03012345), 0x012345)
 
     def test_orphan_and_mismatched_block_files(self):
-        """Reject binaries without a dataset record or without its matching 80-byte header."""
+        """Reject evidence files without a dataset record, and a body without its matching 80-byte header."""
         blocks = self.root / "blocks"
         blocks.mkdir()
         (blocks / "unknown.bin").write_bytes(b"bad")
         self.assertTrue(any("orphan block file" in p for p in self.validate()))
         (blocks / "unknown.bin").unlink()
+        (self.root / "proofs").mkdir()
+        (self.root / "proofs" / "unknown.json").write_text("{}")
+        self.assertTrue(any("orphan proof file" in p for p in self.validate()))
+        (self.root / "proofs" / "unknown.json").unlink()
         (blocks / f"{self.record['height']}-{self.record['hash']}.bin").write_bytes(b"bad")
         self.assertTrue(any("first 80 bytes" in p for p in self.validate()))
 

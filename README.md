@@ -13,6 +13,7 @@ This dataset covers blocks that fail those rules, including failures that can be
 - [`docs/schema.md`](docs/schema.md): fields and admission rules.
 - [`docs/notes.md`](docs/notes.md): replay behaviour and incident notes.
 - `blocks/{height}-{hash}.bin`: full block, when available.
+- `proofs/{height}-{hash}.json`: for a P2SH record without a body, the failing transaction and the block's ordered transaction IDs.
 
 Merge-mined recoveries generally provide a header and coinbase rather than a full Bitcoin block.
 
@@ -32,7 +33,7 @@ Use `merge_mining` for child-chain commitments, `p2p` for direct Bitcoin network
 Prefer immutable evidence URLs.
 
 For header rules, observations and full block files are optional.
-Body failures require a complete `.bin` that demonstrates the named failure.
+Body failures require a complete `.bin` that demonstrates the named failure; a P2SH failure may instead supply a proof file whose transaction IDs reproduce the header's merkle root.
 For sigops, CI fetches the referenced previous transactions from public APIs, verifies their transaction IDs, and calculates the cost using their output scripts.
 For `already_confirmed_in_parent`, CI checks that a named non-coinbase transaction also appears in the canonical parent, using a txid list authenticated against the parent's header merkle root.
 The [schema](docs/schema.md#evidence-enforced-by-ci) specifies each rule's evidence contract; observation labels cannot substitute for these checks.

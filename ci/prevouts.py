@@ -15,19 +15,17 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.client import HTTPException, IncompleteRead
 import json
 from pathlib import Path
-import re
 import time
 import tempfile
 from typing import TypeVar
 from urllib.request import Request, urlopen
 
-from bitcoin.core import CBlock, CBlockHeader, CTransaction, b2lx, lx
+from bitcoin.core import CBlockHeader, CTransaction, b2lx, lx
 
-from block_evidence import omitted_prevouts, read_transaction
+from block_evidence import HEX64, checked_txids, omitted_prevouts, read_transaction
 
 DEFAULT_APIS = ("https://mempool.space/api", "https://blockstream.info/api")
 PREVOUTS_DIR = Path(".cache/prevouts")
-BLOCK_HASH = re.compile(r"[0-9a-fA-F]{64}")
 PARENT_TXIDS_LIMIT = 2 * 1024 * 1024
 T = TypeVar("T")
 
@@ -145,7 +143,7 @@ def decode_confirmation(data: bytes, txid: str) -> tuple[int, str]:
     if not isinstance(payload, dict) or payload.get("confirmed") is not True:
         raise ValueError(f"parent transaction {txid} is not confirmed")
     height, block_hash = payload.get("block_height"), payload.get("block_hash")
-    if type(height) is not int or height < 0 or not isinstance(block_hash, str) or not BLOCK_HASH.fullmatch(block_hash):
+    if type(height) is not int or height < 0 or not isinstance(block_hash, str) or not HEX64.fullmatch(block_hash):
         raise ValueError(f"malformed confirmation: {txid}")
     return height, block_hash.lower()
 
@@ -165,7 +163,7 @@ def _ascii_text(data: bytes) -> str:
 def decode_block_hash(data: bytes, height: int) -> str:
     """Read a block-height reply as a lowercase block hash."""
     text = _ascii_text(data)
-    if not BLOCK_HASH.fullmatch(text):
+    if not HEX64.fullmatch(text):
         raise ValueError(f"malformed block hash for height {height}")
     return text.lower()
 
@@ -195,17 +193,7 @@ def decode_parent_txids(data: bytes, header: CBlockHeader) -> list[str]:
     """Authenticate a complete, ordered txid list against the parent merkle root."""
     if len(data) > PARENT_TXIDS_LIMIT:
         raise ValueError("oversized parent txid list")
-    txids = json.loads(data)
-    if not isinstance(txids, list) or not txids or any(
-            not isinstance(txid, str) or not BLOCK_HASH.fullmatch(txid) for txid in txids):
-        raise ValueError("parent txid list must be a nonempty array of 64-hex strings")
-    txids = [txid.lower() for txid in txids]
-    # Repeated leaves can preserve a merkle root under Bitcoin's odd-leaf padding.
-    if len(set(txids)) != len(txids):
-        raise ValueError("duplicate transaction IDs in parent evidence")
-    if CBlock.build_merkle_tree_from_txids([lx(txid) for txid in txids])[-1] != header.hashMerkleRoot:
-        raise ValueError("parent transaction merkle root mismatch")
-    return txids
+    return checked_txids(json.loads(data), header)
 
 
 def load_parent_txids(block_hash: str, cache_dir: Path | str = PREVOUTS_DIR, fetch: bool = False,

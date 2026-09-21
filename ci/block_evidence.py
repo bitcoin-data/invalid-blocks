@@ -15,9 +15,11 @@ per-input validation budget).
 """
 
 from collections.abc import Mapping, Sequence
+import json
+import re
 from typing import TypeVar
 
-from bitcoin.core import COIN, CBlock, CoreMainParams, CTransaction, Hash as sha256d, MoneyRange, ValidationError, b2lx, lx
+from bitcoin.core import COIN, CBlock, CBlockHeader, CoreMainParams, CTransaction, Hash as sha256d, MoneyRange, ValidationError, b2lx, lx
 from bitcoin.core.scripteval import SCRIPT_VERIFY_P2SH, VerifyScript, VerifySignature
 from bitcoin.core.script import (
     CScript, CScriptInvalidError, CScriptOp, OP_1, OP_16,
@@ -27,6 +29,7 @@ from bitcoin.core.serialize import SerializationError
 
 T = TypeVar("T", CBlock, CTransaction)
 
+HEX64 = re.compile(r"[0-9a-fA-F]{64}")
 MAX_MONEY = CoreMainParams.MAX_MONEY
 MAX_BLOCK_SIGOPS_COST = 80_000
 
@@ -115,6 +118,31 @@ def reuses_parent_transaction(block: CBlock, parent_txids: Sequence[str], txid: 
     target = lx(txid)
     return (txid in parent_txids[1:]
             and any(not tx.is_coinbase() and tx.GetTxid() == target for tx in block.vtx[1:]))
+
+
+def checked_txids(txids: object, header: CBlockHeader) -> list[str]:
+    """Require a nonempty list of distinct 64-hex txids whose merkle root is the header's."""
+    if not isinstance(txids, list) or not txids or any(
+            not isinstance(txid, str) or not HEX64.fullmatch(txid) for txid in txids):
+        raise ValueError("txid list must be a nonempty array of 64-hex strings")
+    txids = [txid.lower() for txid in txids]
+    # Repeated leaves can preserve a merkle root under Bitcoin's odd-leaf padding.
+    if len(set(txids)) != len(txids):
+        raise ValueError("duplicate transaction IDs in txid list")
+    if CBlock.build_merkle_tree_from_txids([lx(txid) for txid in txids])[-1] != header.hashMerkleRoot:
+        raise ValueError("txid list merkle root mismatch")
+    return txids
+
+
+def read_proof(data: bytes, header: CBlockHeader) -> CTransaction:
+    """Read a transaction and the ordered txid list that places it in the header's block."""
+    proof = json.loads(data)
+    if not isinstance(proof, dict) or set(proof) != {"transaction", "txids"}:
+        raise ValueError("proof must be an object with transaction and txids")
+    tx = read_transaction(bytes.fromhex(proof["transaction"]))
+    if b2lx(tx.GetTxid()) not in checked_txids(proof["txids"], header):
+        raise ValueError("proof transaction is not in the block's txid list")
+    return tx
 
 
 def spending_input(transactions: Sequence[CTransaction], txid: bytes, vout: int) -> tuple[CTransaction, int]:
