@@ -219,6 +219,18 @@ class DatasetChecks(unittest.TestCase):
         (cache / f"height-{self.record['height'] - 1}.hash").write_text(parent)
         self.assertTrue(any("missing cached parent header" in p for p in self.validate(prevouts_dir=cache)))
 
+    def test_p2sh_failure_requires_named_spend_after_activation(self):
+        """Admit a P2SH body from cached evidence; reject an unspent outpoint, a pre-BIP16 time and a missing cache."""
+        self.record = self.for_rule("p2sh_redeem_script_failure")
+        self.copy_body(self.record)
+        self.assertEqual(self.validate(), [])
+        with self.subTest(case="outpoint not spent"), patch.dict(self.record["context"], {"failing_prevout": "00" * 32 + ":0"}):
+            self.assertTrue(any("exactly one input" in p for p in self.validate()))
+        with self.subTest(case="before activation"), patch.object(CHECK, "BIP16_TIME", 2 ** 31):
+            self.assertTrue(any("BIP16 activation" in p for p in self.validate()))
+        with self.subTest(case="missing cache"):
+            self.assertTrue(any("missing cached" in p for p in self.validate(prevouts_dir=self.root / "empty")))
+
     def test_body_matches_claimed_evidence(self):
         """Bind the named failure and supplied coinbase scriptSig to the available body."""
         self.record = self.for_rule("bad-txns-vout-toolarge")

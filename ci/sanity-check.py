@@ -22,7 +22,8 @@ from bitcoin.core.script import CScript, CScriptInvalidError, OP_1NEGATE
 from bitcoin.core.serialize import uint256_from_compact
 
 from block_evidence import (
-    MAX_BLOCK_SIGOPS_COST, coinbase_amounts, confirmed_at_or_after, establishes_rule, omitted_prevouts,
+    MAX_BLOCK_SIGOPS_COST, coinbase_amounts, confirmed_at_or_after, establishes_rule, omitted_prevouts, p2sh_spend_fails,
+    spending_input,
     read_block, reuses_parent_transaction, sigop_cost, verify_witness_commitment,
 )
 from prevouts import (
@@ -34,7 +35,7 @@ BLOCKS_DIR = Path("blocks")
 REQUIRED = {"height", "hash", "header", "prev_hash", "nTime", "core_reject_reason", "rule"}
 CONTEXT_FIELDS = {
     "expected_nbits", "parent_mtp", "coinbase_height", "coinbase_scriptsig_hex",
-    "pool", "pool_basis", "parent_kind", "missing_prevout", "parent_txid",
+    "pool", "pool_basis", "parent_kind", "missing_prevout", "parent_txid", "failing_prevout",
 }
 OUTPOINT = re.compile(r"[0-9a-f]{64}:(?:0|[1-9][0-9]*)")
 OBSERVATION_REQUIRED = {"channel", "source", "provenance"}
@@ -44,13 +45,14 @@ CHANNELS = {"merge_mining", "p2p", "scrape"}
 PARENT_KINDS = {"canonical", "stale", "invalid"}
 POOL_BASES = {"tag", "reported", "address"}
 POW_LIMIT = 0xFFFF << (8 * (0x1D - 3))
+BIP16_TIME = 1333238400  # 1 April 2012, when 2012 nodes began executing P2SH redeem scripts
 
 # Evidence paths: local = header/context only; body = complete block file;
 # sigops = body plus previous transactions; missing_parent = body plus API
 # evidence for the recorded outpoint; parent_txid_reuse = body plus an
 # authenticated canonical parent txid list; cb_amount = body plus canonical
-# parent and fee prevouts.
-# Rule names and reject strings must
+# parent and fee prevouts; p2sh = body plus the spent output of the named
+# input. Rule names and reject strings must
 # match docs/schema.md.
 RULES = {
     "bad-txns-vout-toolarge": ("bad-txns-vout-toolarge", (), "body"),
@@ -60,6 +62,7 @@ RULES = {
     "missing_unconfirmed_parent": ("bad-txns-inputs-missingorspent", ("missing_prevout",), "missing_parent"),
     "already_confirmed_in_parent": ("bad-txns-inputs-missingorspent",
         ("parent_txid", "parent_kind", "coinbase_height", "coinbase_scriptsig_hex"), "parent_txid_reuse"),
+    "p2sh_redeem_script_failure": ("block-script-verify-flag-failed", ("failing_prevout",), "p2sh"),
     "bip34_v2_coinbase_height_mismatch": (
         "bad-cb-height", ("coinbase_height", "coinbase_scriptsig_hex"), "local"),
     "bip34_coinbase_height_mismatch": (
@@ -178,9 +181,9 @@ def check_context(record: dict[str, Any]) -> None:
         raise ValueError("pool_basis requires pool")
     if "parent_txid" in details:
         hex_value(details, "parent_txid", 32)
-    if "missing_prevout" in details and not (
-            isinstance(details["missing_prevout"], str) and OUTPOINT.fullmatch(details["missing_prevout"])):
-        raise ValueError("missing_prevout must be txid:vout in lowercase hex")
+    for name in ("missing_prevout", "failing_prevout"):
+        if name in details and not (isinstance(details[name], str) and OUTPOINT.fullmatch(details[name])):
+            raise ValueError(f"{name} must be txid:vout in lowercase hex")
     if "parent_kind" in details and details["parent_kind"] not in tuple(PARENT_KINDS):
         raise ValueError(f"parent_kind must be one of {sorted(PARENT_KINDS)}")
     required = set(RULES[record["rule"]][1])
@@ -289,6 +292,8 @@ def check_local_evidence(record: dict[str, Any], header: CBlockHeader) -> None:
             raise ValueError("scriptSig has the correct BIP34 height prefix")
         if rule == "bip34_coinbase_height_missing" and script_height(script) is not None:
             raise ValueError("missing-height rule requires no decodable height prefix")
+    if rule == "p2sh_redeem_script_failure" and record["nTime"] < BIP16_TIME:
+        raise ValueError("P2SH rule requires nTime at or after BIP16 activation")
     if rule == "coinbase_scriptsig_length_above_100" and len(script) <= 100:
         raise ValueError("coinbase scriptSig must exceed 100 bytes")
 
@@ -329,6 +334,11 @@ def check_failure_evidence(record: dict[str, Any], block: CBlock | None, prevout
         if fetch_prevouts:
             print(f"{record['height']}: coinbase {amounts['coinbase']}, subsidy {amounts['subsidy']}, "
                   f"fees {amounts['fees']}, excess {amounts['excess']} sat", flush=True)
+    if mode == "p2sh":
+        txid, vout = record["context"]["failing_prevout"].split(":")
+        tx, index = spending_input(block.vtx, lx(txid), int(vout))
+        if not p2sh_spend_fails(tx, index, load_transaction(txid, prevouts_dir, fetch_prevouts, apis)):
+            raise ValueError("named input does not fail P2SH evaluation")
     if mode == "missing_parent":
         txid, vout = record["context"]["missing_prevout"].split(":")
         if (lx(txid), int(vout)) not in omitted_prevouts(block.vtx):

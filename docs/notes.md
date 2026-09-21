@@ -41,6 +41,21 @@ Core skips BIP30 checks below height 1983702 on the known mainnet chain after BI
 A 2026-09-15 sweep of all 1086 stale-blocks bodies at [be1e859](https://github.com/bitcoin-data/stale-blocks/commit/be1e8597615c3372aab9ca437a9cd554822b6870) found no other non-coinbase intersection among the 1073 bodies extending canonical parents; 13 extended noncanonical parents and were out of scope.
 A negative result does not establish that a block satisfies every consensus rule.
 
+### 173928, 173957, 173998 and 174605 - P2SH redeem-script failure (2012)
+
+Each body includes the same 123-byte transaction, `4005d6bea3a93fb72f006d23e2685b85069d270cb57d15f0c057ef2d5e3f78d2`, which spends a pay-to-script-hash output funded at canonical 170054, `b0539a45de13b3e0403909b8bd1a555b8cbe45fd4e3f3fda76f3a5f52835c29d:1`, worth 400000 satoshis.
+Its scriptSig pushes only the redeem script, a 1-of-1 `OP_CHECKMULTISIG`.
+The pre-BIP16 template check hashes that push and compares it, and passes; executing the redeem script finds no signature on the stack and fails.
+Nodes applying the 1 April 2012 rules rejected these blocks while older nodes accepted them, which is how the same transaction was included by many miners for months.
+Core today reports `block-script-verify-flag-failed (Operation not valid with the current stack size)`.
+
+The four bodies are reconstructions: the coinbase from Namecoin's AuxPoW record, the other transactions from their later confirmations on the accepted chain, and the invalid spend itself; each reproduces its header's merkle root.
+They hold 67, 64, 23 and 14 transactions in 31258, 41258, 7662 and 4855 bytes.
+CI fetches the funding transaction, checks its txid, and evaluates the named input with and without P2SH.
+The blockchain.info block pages archived by the Wayback Machine in April 2012 list each block's transactions.
+The [2 April 2012 bitcoin-dev log](https://buildingbitcoin.org/bitcoin-dev/log-2012-04-02.html) records the first `P2SH VerifySignature failed` rejections and the [4 April log](https://buildingbitcoin.org/bitcoin-dev/log-2012-04-04.html) preserves the transaction.
+Eighty-five further blocks carry the same spend with authenticated inclusion proofs but no complete body; they need a proof-based admission path.
+
 ### 74638 - value overflow (2010)
 
 `bad-txns-vout-toolarge` is the 2010 overflow incident ([CVE-2010-5139](https://en.bitcoin.it/wiki/Value_overflow_incident)).

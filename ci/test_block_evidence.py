@@ -6,9 +6,19 @@ from bitcoin.core import CBlock, COutPoint, CTransaction, CTxIn, CTxOut, CTxWitn
 from bitcoin.core.script import CScript, CScriptWitness, OP_TRUE
 
 from block_evidence import (
-    MAX_MONEY, coinbase_amounts, confirmed_at_or_after, establishes_rule, omitted_prevouts, read_block, read_transaction,
-    reuses_parent_transaction, sha256d, sigop_count, witness_sigops,
+    MAX_MONEY, coinbase_amounts, confirmed_at_or_after, establishes_rule, omitted_prevouts, p2sh_spend_fails, read_block,
+    read_transaction, reuses_parent_transaction, sha256d, sigop_count, witness_sigops,
 )
+
+# The 123-byte spend included by 89 blocks in April to July 2012, and the transaction that funded it.
+P2SH_SPEND = bytes.fromhex(
+    "01000000019dc23528f5a5f376da3f3f4efd45be8c5b551abdb8093940e0b313de459a53b00100000026255121029c7187ecea7f09146820075c3a8d"
+    "e5d33ffbc293b63228ea1667c8d3796aff3f51aeffffffff0130570500000000001976a9147288ca9e213c54cbb2094f00bcf33bfbce691dbb88ac00000000")
+P2SH_FUNDING = bytes.fromhex(
+    "0100000001f6ea284ec7521f8a7d094a6cf4e6873098b90f90725ffd372b343189d7a4089c000000006c4930460221009d1055704950ab3b695c7215"
+    "0169e5a41ccd7757b15185dc298e85112ca7fea1022100e979474bae5d7cb44e5149af8b146eab1cb237646094c99eae07579981b2eeae0121025801"
+    "704c59321b645109931691c996a0ae797cf155a5ece34bdc065e6b5437a1ffffffff02fc0a0300000000001976a9145a3acbc7bbcc97c5ff16f5909c"
+    "9d7d3fadb293a888ac801a06000000000017a914e8c300c87986efa84c37c0519929019ef86eb5b48700000000")
 
 
 def transaction(prev_hash=bytes(32), vout=0xffffffff, amount=1, witness=False):
@@ -81,6 +91,15 @@ class BlockEvidenceChecks(unittest.TestCase):
         for case, wire in cases.items():
             with self.subTest(case=case), self.assertRaises(ValueError):
                 read_block(wire)
+
+    def test_p2sh_spend_passes_legacy_and_fails_p2sh(self):
+        """The 2012 spend fails only once the redeem script runs; a spend that fails regardless is not evidence."""
+        spend, funding = read_transaction(P2SH_SPEND), read_transaction(P2SH_FUNDING)
+        self.assertEqual(spend.vin[0].prevout.hash, funding.GetTxid())
+        self.assertTrue(p2sh_spend_fails(spend, 0, funding))
+        wrong = CTransaction([CTxIn(spend.vin[0].prevout, CScript([b"\x51"]))], spend.vout)
+        with self.subTest(case="fails without P2SH"), self.assertRaisesRegex(ValueError, "even without P2SH"):
+            p2sh_spend_fails(wrong, 0, funding)
 
     def test_parent_transaction_reuse_excludes_coinbases_and_absent_transactions(self):
         """The named witness must be a non-coinbase transaction present in both blocks."""
