@@ -54,3 +54,13 @@ This is not an in-block ordering error: unlike 477115 and 809478, no later trans
 The [preserved full block](../blocks/474294-00000000000000000182acdf5657c93a0769dc6f9004047496b2e15efc6a4232.bin), the parent transaction, its current confirmation and the canonical block hash at 474293 re-derive the violation.
 
 Contemporaneous discussion is [BitcoinTalk topic 2041607](https://bitcointalk.org/index.php?topic=2041607.0).
+
+### 363731 - BIP66 fork trigger (2015)
+
+This version-2 header started the 4 July 2015 fork.
+The fixture's other five headers, all version 3, chain from it through 363736; the network reorganized away from them, and the [alert](https://bitcoin.org/en/alert/2015-07-04-spv-mining) that followed asked lightweight-wallet users to wait for extra confirmations.
+Those five descendants fail by ancestry and are not recorded here.
+The 80-byte header comes from a blockchain.info block dump preserved in the [BTC Relay test fixture for this fork](https://github.com/crossclaim/btcrelay-sol/tree/1cf676d387c4514770b91e4ca15094194f446677/test/testdata/old_headers/fork/20150704), which also holds the six raw headers; the same field set survives independently in a [TypeScript port of BTC Relay](https://github.com/adambor/BtcRelay-EVM-TS/blob/8a8c10908655f356f5985d3d8af951f756a92ada/src/test/forkedBlocks.ts).
+The [dump's](https://github.com/crossclaim/btcrelay-sol/blob/1cf676d387c4514770b91e4ca15094194f446677/test/testdata/old_headers/fork/20150704/363731.json) 99 transaction IDs reproduce the header's merkle root, and its coinbase fields reserialize to the first of those IDs, which ties the recorded scriptSig to the header.
+The coinbase pays `1BwZeHJo7b7M2op7VDfYnsmcpXsUYEcVHm`, the address [mining-pools](https://github.com/bitcoin-data/mining-pools/blob/af720b67faa2f157264db33c644eb1b0fa95af5f/pools/btc-nuggets.json) lists for BTC Nuggets; the scriptSig tags are `/P2SH/` and `/stratumPool/`, so the attribution is by address.
+A [16 March 2017 bitcoin-dev message](https://gnusha.org/pi/bitcoindev/48d3940ab1a2bd53c6e056ce7fbcd361@cock.lu/) lists this hash among blocks a node rejected with `bad-version(0x00000002)`.
