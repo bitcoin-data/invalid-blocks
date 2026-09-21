@@ -43,7 +43,8 @@ Context is shared across observations; adding another witness does not duplicate
 | `parent_mtp` | integer | Parent median-time-past, the median of eleven block timestamps, in Unix seconds. Required for `time_below_mtp`. |
 | `coinbase_height` | integer | Height decoded from the BIP34 scriptSig prefix. Required for a BIP34 height mismatch. |
 | `coinbase_scriptsig_hex` | string | Coinbase input scriptSig. Required for BIP34 failures and `coinbase_scriptsig_length_above_100`. |
-| `pool` | string | Pool identified from the coinbase tag, when known. |
+| `pool` | string | Pool the block is attributed to, when known. Requires `pool_basis`. |
+| `pool_basis` | string | How the pool was identified: `tag` when the pool name appears as a tag in the coinbase scriptSig, `address` when the coinbase payout address is listed for the pool in [mining-pools](https://github.com/bitcoin-data/mining-pools), or `reported` when only a contemporaneous report names the pool. Required whenever `pool` is present and not allowed otherwise. Descriptive: CI checks the value, not the attribution. |
 | `parent_kind` | string | Chain status of the previous block: `canonical`, `stale`, or `invalid`. `invalid` means the previous block is in this dataset. Descriptive and unverified: CI checks the spelling, not the chain. |
 | `missing_prevout` | string | Outpoint as `txid:vout`, spent by a non-coinbase input whose transaction is not in the block. Required for `missing_unconfirmed_parent`. |
 
