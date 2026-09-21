@@ -241,7 +241,7 @@ class DatasetChecks(unittest.TestCase):
         """Retarget evidence needs a valid differing expected target at a retarget height."""
         self.record = self.for_rule("nbits_retarget_not_applied")
         original = copy.deepcopy(self.record)
-        bits = bytes.fromhex(self.record["header"])[72:76][::-1].hex()
+        bits = f"{CBlockHeader.deserialize(bytes.fromhex(self.record['header'])).nBits:08x}"
         for expected in (bits, "00000000", "1d80ffff"):
             with self.subTest(expected=expected):
                 self.record["context"]["expected_nbits"] = expected
