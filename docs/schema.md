@@ -18,6 +18,7 @@ Omit unknown or inapplicable optional fields instead of writing `null` or empty 
 Hex strings are lowercase without `0x`.
 Bitcoin hashes use RPC/display byte order with leading zeros; `header` is the 160-character wire serialization.
 Full blocks, when available, are `blocks/{height}-{hash}.bin`.
+A P2SH record without a body carries `proofs/{height}-{hash}.json` instead.
 
 ## Required fields
 
@@ -130,7 +131,7 @@ A provenance URL cannot bypass these requirements.
 | `bad-txns-inputs-missingorspent` | A complete block containing a spend of an existing output of a later transaction in that block. A spend of a parent transaction absent from the block uses `missing_unconfirmed_parent`. |
 | `missing_unconfirmed_parent` | A complete block extending the block a public API reports at the previous height. The `missing_prevout` outpoint must be spent by an input in the block and created by a transaction not in the block, and the API must currently report that transaction confirmed in another block at this height or later. Unconfirmed or absent status is not evidence. |
 | `already_confirmed_in_parent` | A complete block whose named `parent_txid` is a non-coinbase transaction in both that body and its canonical parent. The parent's ordered txid list must reproduce the merkle root of a hash-verified parent header, and the canonical hash at height minus one must equal `prev_hash`. Require `parent_kind=canonical` and body-derived coinbase fields with `coinbase_height` equal to the record height. |
-| `p2sh_redeem_script_failure` | A complete block with header time at or after 1 April 2012 whose named `failing_prevout` is spent by exactly one input in the body. That input must pass script evaluation without P2SH and fail with it, checked against the authenticated previous transaction. |
+| `p2sh_redeem_script_failure` | A complete block, or a proof file holding the transaction and the block's ordered txids, with header time at or after 1 April 2012, in which exactly one input spends the named `failing_prevout`. That input must pass script evaluation without P2SH and fail with it, checked against the authenticated previous transaction. |
 | `bad-blk-sigops` | A complete block at mainnet height 481824 or later, authenticated previous transactions for every external input, and calculated BIP16/BIP141 sigop cost above 80000. |
 | `bip34_v2_coinbase_height_mismatch` | Both coinbase context fields, decoded height matching the scriptSig, and a scriptSig that lacks the exact expected BIP34 prefix. Header version must be at least 2 and height below 227931. Applicability of the historical rolling-version threshold still requires review. |
 | `bip34_coinbase_height_mismatch` | Both coinbase context fields, decoded height matching the scriptSig, and a scriptSig that lacks the exact expected BIP34 prefix, at height 227931 or later. A non-minimal encoding of the right number also fails the prefix check. |
@@ -169,7 +170,7 @@ Before accepting a response, CI parses the whole transaction and verifies its tx
 It caches stripped transaction bytes under `.cache/prevouts/{txid}.bin`; witness data from previous transactions is unnecessary for authenticating their outputs.
 Every cache hit undergoes the same identity check.
 A corrupt cache entry fails instead of being trusted or silently replaced.
-GitHub Actions caches previous transactions by the contents of the block files, reusing older caches to reduce downloads when blocks are added.
+GitHub Actions caches previous transactions by the contents of the block and proof files, reusing older caches to reduce downloads when evidence is added.
 Only successful non-PR runs on the default branch save an archive, and only when no exact cache exists for that block set.
 Without `--fetch-prevouts`, all required entries must already be cached; missing evidence is an error.
 Cache contents are not committed to the dataset.
@@ -251,6 +252,10 @@ Nodes of 2012 executed redeem scripts for blocks timestamped from 1 April 2012 (
 Bitcoin Core today applies P2SH from genesis, with one historical exception at block 170060 (`script_flag_exceptions` in `src/kernel/chainparams.cpp`), and reports the failure as `block-script-verify-flag-failed` with the script error in parentheses.
 
 `failing_prevout` names the spent output.
-CI finds the one input in the body that spends it, fetches and authenticates the previous transaction through the sigops cache, and evaluates that input twice with python-bitcoinlib: `VerifySignature` binds it to the previous output and runs it with no flags, then `VerifyScript` runs it with `SCRIPT_VERIFY_P2SH`; it must pass the first and fail the second.
+CI finds the one input that spends it, in the body or in the proof file's transaction, fetches and authenticates the previous transaction through the sigops cache, and evaluates that input twice with python-bitcoinlib: `VerifySignature` binds it to the previous output and runs it with no flags, then `VerifyScript` runs it with `SCRIPT_VERIFY_P2SH`; it must pass the first and fail the second.
 An input that fails without P2SH is an error rather than evidence.
 This evaluates one input with a library interpreter; it is not Bitcoin Core's interpreter and does not validate the other inputs in the block.
+
+A record without a body may carry `proofs/{height}-{hash}.json`: an object with `transaction`, the hex of the failing transaction, and `txids`, the block's complete ordered transaction IDs.
+The list must reproduce the header's merkle root and contain the transaction's txid, which binds the transaction to the header without its other bodies; the input is then checked exactly as for a body.
+A record has a body or a proof file, not both, and a proof file for any other rule is an error.

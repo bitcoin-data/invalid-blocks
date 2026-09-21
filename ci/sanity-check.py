@@ -16,7 +16,7 @@ import sys
 from typing import Any
 from urllib.parse import urlparse
 
-from bitcoin.core import CBlock, CBlockHeader, b2lx, lx
+from bitcoin.core import CBlock, CBlockHeader, CTransaction, b2lx, lx
 from bitcoin.core._bignum import vch2bn
 from bitcoin.core.script import CScript, CScriptInvalidError, OP_1NEGATE
 from bitcoin.core.serialize import uint256_from_compact
@@ -24,7 +24,7 @@ from bitcoin.core.serialize import uint256_from_compact
 from block_evidence import (
     MAX_BLOCK_SIGOPS_COST, coinbase_amounts, confirmed_at_or_after, establishes_rule, omitted_prevouts, p2sh_spend_fails,
     spending_input,
-    read_block, reuses_parent_transaction, sigop_cost, verify_witness_commitment,
+    read_block, read_proof, reuses_parent_transaction, sigop_cost, verify_witness_commitment,
 )
 from prevouts import (
     DEFAULT_APIS, PREVOUTS_DIR, load_canonical_hash, load_confirmation, load_parent_txids, load_previous, load_transaction,
@@ -32,6 +32,7 @@ from prevouts import (
 
 DATA_PATH = Path("data/invalid-blocks.jsonl")
 BLOCKS_DIR = Path("blocks")
+PROOFS_DIR = Path("proofs")
 REQUIRED = {"height", "hash", "header", "prev_hash", "nTime", "core_reject_reason", "rule"}
 CONTEXT_FIELDS = {
     "expected_nbits", "parent_mtp", "coinbase_height", "coinbase_scriptsig_hex",
@@ -51,8 +52,8 @@ BIP16_TIME = 1333238400  # 1 April 2012, when 2012 nodes began executing P2SH re
 # sigops = body plus previous transactions; missing_parent = body plus API
 # evidence for the recorded outpoint; parent_txid_reuse = body plus an
 # authenticated canonical parent txid list; cb_amount = body plus canonical
-# parent and fee prevouts; p2sh = body plus the spent output of the named
-# input. Rule names and reject strings must
+# parent and fee prevouts; p2sh = body or proof file plus the spent output of
+# the named input. Rule names and reject strings must
 # match docs/schema.md.
 RULES = {
     "bad-txns-vout-toolarge": ("bad-txns-vout-toolarge", (), "body"),
@@ -311,12 +312,15 @@ def require_canonical_parent(record: dict[str, Any], prevouts_dir: Path | str, f
 
 
 def check_failure_evidence(record: dict[str, Any], block: CBlock | None, prevouts_dir: Path | str = PREVOUTS_DIR,
-                           fetch_prevouts: bool = False, apis: Sequence[str] = DEFAULT_APIS) -> None:
+                           fetch_prevouts: bool = False, apis: Sequence[str] = DEFAULT_APIS,
+                           proof: CTransaction | None = None) -> None:
     """Require a checked failure; observations cannot substitute for bytes."""
     mode = RULES[record["rule"]][2]
+    if proof is not None and mode != "p2sh":
+        raise ValueError("proof files apply only to the P2SH rule")
     if mode == "local":
         return
-    if block is None:
+    if block is None and proof is None:
         raise ValueError(f"{record['rule']} requires a complete block body")
     if mode == "body" and not establishes_rule(block, record["rule"]):
         raise ValueError(f"committed body does not demonstrate {record['rule']}")
@@ -336,7 +340,8 @@ def check_failure_evidence(record: dict[str, Any], block: CBlock | None, prevout
                   f"fees {amounts['fees']}, excess {amounts['excess']} sat", flush=True)
     if mode == "p2sh":
         txid, vout = record["context"]["failing_prevout"].split(":")
-        tx, index = spending_input(block.vtx, lx(txid), int(vout))
+        transactions = block.vtx if block is not None else [proof]
+        tx, index = spending_input(transactions, lx(txid), int(vout))
         if not p2sh_spend_fails(tx, index, load_transaction(txid, prevouts_dir, fetch_prevouts, apis)):
             raise ValueError("named input does not fail P2SH evaluation")
     if mode == "missing_parent":
@@ -368,11 +373,13 @@ def check_failure_evidence(record: dict[str, Any], block: CBlock | None, prevout
 
 def check_dataset(path: Path | str = DATA_PATH, blocks_dir: Path | str = BLOCKS_DIR,
                   prevouts_dir: Path | str = PREVOUTS_DIR, fetch_prevouts: bool = False,
-                  apis: Sequence[str] = DEFAULT_APIS) -> tuple[list[str], tuple[int, int, int, int]]:
+                  apis: Sequence[str] = DEFAULT_APIS,
+                  proofs_dir: Path | str = PROOFS_DIR) -> tuple[list[str], tuple[int, int, int, int, int]]:
     problems = []
     seen = set()
-    remaining_blocks = {block.name: block for block in Path(blocks_dir).glob("*.bin")}
-    block_count = 0
+    remaining = {"block": {path.name: path for path in Path(blocks_dir).glob("*.bin")},
+                 "proof": {path.name: path for path in Path(proofs_dir).glob("*.json")}}
+    found = {kind: len(paths) for kind, paths in remaining.items()}
     last_key = None
     observation_count = 0
     context_count = 0
@@ -393,8 +400,8 @@ def check_dataset(path: Path | str = DATA_PATH, blocks_dir: Path | str = BLOCKS_
             if record["core_reject_reason"] != RULES[rule][0]:
                 raise ValueError(f"rule {rule} requires core_reject_reason={RULES[rule][0]}")
             block_hash = record["hash"]
-            block = remaining_blocks.pop(f"{height}-{block_hash}.bin", None)
-            block_count += block is not None
+            block = remaining["block"].pop(f"{height}-{block_hash}.bin", None)
+            proof = remaining["proof"].pop(f"{height}-{block_hash}.json", None)
             key = (height, block_hash)
             if last_key is not None and key < last_key:
                 raise ValueError("records must be ordered by height then hash")
@@ -429,12 +436,19 @@ def check_dataset(path: Path | str = DATA_PATH, blocks_dir: Path | str = BLOCKS_
                 if "coinbase_scriptsig_hex" in details:
                     if evidence_block.vtx[0].vin[0].scriptSig.hex() != details["coinbase_scriptsig_hex"]:
                         raise ValueError("coinbase scriptSig does not match context")
-            check_failure_evidence(record, evidence_block, prevouts_dir, fetch_prevouts, apis)
+            proof_transaction = None
+            if proof is not None:
+                if block is not None:
+                    raise ValueError("a record has either a block body or a proof file, not both")
+                proof_transaction = read_proof(proof.read_bytes(), parsed_header)
+            check_failure_evidence(record, evidence_block, prevouts_dir, fetch_prevouts, apis, proof_transaction)
         except (OSError, ValueError) as exc:
             problems.append(f"{where}: {exc}")
-    for block in sorted(remaining_blocks.values()):
-        problems.append(f"{block}: orphan block file; name must match a dataset record")
-    return problems, (len(seen), context_count, observation_count, block_count)
+    for kind, paths in remaining.items():
+        for path in sorted(paths.values()):
+            problems.append(f"{path}: orphan {kind} file; name must match a dataset record")
+    return problems, (len(seen), context_count, observation_count,
+                      found["block"] - len(remaining["block"]), found["proof"] - len(remaining["proof"]))
 
 
 def main() -> int:
@@ -451,7 +465,7 @@ def main() -> int:
         print("\n".join(problems))
         return 1
     print("sanity-check successful")
-    print(f"  {counts[0]} blocks, {counts[1]} contexts, {counts[2]} observations, {counts[3]} block files")
+    print(f"  {counts[0]} blocks, {counts[1]} contexts, {counts[2]} observations, {counts[3]} block files, {counts[4]} proof files")
     return 0
 
 
