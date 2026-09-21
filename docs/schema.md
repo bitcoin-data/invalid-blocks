@@ -6,7 +6,7 @@ Height is `prev + 1`, not a unique key: different blocks at the same height rema
 
 A block may enter the dataset only if its header meets its encoded PoW target and its named consensus failure has the evidence required below.
 Header/context rules use the supplied header and context.
-Body rules require a complete block; sigops, missing-parent, parent-transaction reuse and fee accounting rules additionally require evidence fetched from public APIs or verified cache entries.
+Body rules require a complete block; sigops, missing-parent, parent-transaction reuse, fee accounting and P2SH rules additionally require evidence fetched from public APIs or verified cache entries.
 Observations document acquisition and incident history, but an explorer label or reported reject string cannot substitute for the evidence check.
 
 JSONL keeps each block's identity, optional context and repeated observations together.
@@ -44,10 +44,11 @@ Context is shared across observations; adding another witness does not duplicate
 | `coinbase_height` | integer | Height decoded from the BIP34 scriptSig prefix. Required for a BIP34 height mismatch and `already_confirmed_in_parent`. |
 | `coinbase_scriptsig_hex` | string | Coinbase input scriptSig. Required for BIP34 failures, `coinbase_scriptsig_length_above_100` and `already_confirmed_in_parent`. |
 | `pool` | string | Pool the block is attributed to, when known. Requires `pool_basis`. |
-| `pool_basis` | string | How the pool was identified: `tag` when the pool name appears as a tag in the coinbase scriptSig, `address` when the coinbase payout address is listed for the pool in [mining-pools](https://github.com/bitcoin-data/mining-pools), or `reported` when only a contemporaneous report names the pool. Required whenever `pool` is present and not allowed otherwise. Descriptive: CI checks the value, not the attribution. |
+| `pool_basis` | string | How the pool was identified: `tag` when the coinbase scriptSig carries the pool's name or a tag [mining-pools](https://github.com/bitcoin-data/mining-pools) lists for it, `address` when the coinbase payout address is listed for the pool in [mining-pools](https://github.com/bitcoin-data/mining-pools), or `reported` when only a contemporaneous report names the pool. Required whenever `pool` is present and not allowed otherwise. Descriptive: CI checks the value, not the attribution. |
 | `parent_kind` | string | Chain status of the previous block: `canonical`, `stale`, or `invalid`. `invalid` means the previous block is in this dataset. Descriptive, except that the rules which look up the canonical block at the previous height (`missing_unconfirmed_parent`, `already_confirmed_in_parent`) reject any other value. |
 | `missing_prevout` | string | Outpoint as `txid:vout`, spent by a non-coinbase input whose transaction is not in the block. Required for `missing_unconfirmed_parent`. |
 | `parent_txid` | string | Lowercase 64-hex txid of a non-coinbase transaction in both the candidate and its canonical parent. Required for `already_confirmed_in_parent`. |
+| `failing_prevout` | string | Outpoint as `txid:vout`, spent by the input whose P2SH evaluation fails. Required for `p2sh_redeem_script_failure`. |
 
 ## Optional `observations` array
 
@@ -89,7 +90,7 @@ Core functions live in [bitcoin/bitcoin](https://github.com/bitcoin/bitcoin):
 - [src/consensus/tx_check.cpp](https://github.com/bitcoin/bitcoin/blob/master/src/consensus/tx_check.cpp): `CheckTransaction`
 - [src/consensus/tx_verify.cpp](https://github.com/bitcoin/bitcoin/blob/master/src/consensus/tx_verify.cpp): `CheckTxInputs`, `GetTransactionSigOpCost`
 - [src/script/script.cpp](https://github.com/bitcoin/bitcoin/blob/master/src/script/script.cpp): `GetSigOpCount`
-- [src/script/interpreter.cpp](https://github.com/bitcoin/bitcoin/blob/master/src/script/interpreter.cpp): `CountWitnessSigOps`
+- [src/script/interpreter.cpp](https://github.com/bitcoin/bitcoin/blob/master/src/script/interpreter.cpp): `CountWitnessSigOps`, `EvalScript`
 
 | `rule` | `core_reject_reason` | Typical Core check |
 | --- | --- | --- |
@@ -99,6 +100,7 @@ Core functions live in [bitcoin/bitcoin](https://github.com/bitcoin/bitcoin):
 | `bad-txns-inputs-missingorspent` | `bad-txns-inputs-missingorspent` | `ConnectBlock` via `CheckTxInputs` |
 | `missing_unconfirmed_parent` | `bad-txns-inputs-missingorspent` | `ConnectBlock` via `CheckTxInputs` |
 | `already_confirmed_in_parent` | `bad-txns-inputs-missingorspent` | `ConnectBlock` via `CheckTxInputs` |
+| `p2sh_redeem_script_failure` | `block-script-verify-flag-failed` | `ConnectBlock` via `CheckInputScripts` |
 | `bip34_v2_coinbase_height_mismatch` | `bad-cb-height` | `ContextualCheckBlock` |
 | `bip34_coinbase_height_mismatch` | `bad-cb-height` | `ContextualCheckBlock` |
 | `bip34_coinbase_height_missing` | `bad-cb-height` | `ContextualCheckBlock` |
@@ -128,6 +130,7 @@ A provenance URL cannot bypass these requirements.
 | `bad-txns-inputs-missingorspent` | A complete block containing a spend of an existing output of a later transaction in that block. A spend of a parent transaction absent from the block uses `missing_unconfirmed_parent`. |
 | `missing_unconfirmed_parent` | A complete block extending the block a public API reports at the previous height. The `missing_prevout` outpoint must be spent by an input in the block and created by a transaction not in the block, and the API must currently report that transaction confirmed in another block at this height or later. Unconfirmed or absent status is not evidence. |
 | `already_confirmed_in_parent` | A complete block whose named `parent_txid` is a non-coinbase transaction in both that body and its canonical parent. The parent's ordered txid list must reproduce the merkle root of a hash-verified parent header, and the canonical hash at height minus one must equal `prev_hash`. Require `parent_kind=canonical` and body-derived coinbase fields with `coinbase_height` equal to the record height. |
+| `p2sh_redeem_script_failure` | A complete block with header time at or after 1 April 2012 whose named `failing_prevout` is spent by exactly one input in the body. That input must pass script evaluation without P2SH and fail with it, checked against the authenticated previous transaction. |
 | `bad-blk-sigops` | A complete block at mainnet height 481824 or later, authenticated previous transactions for every external input, and calculated BIP16/BIP141 sigop cost above 80000. |
 | `bip34_v2_coinbase_height_mismatch` | Both coinbase context fields, decoded height matching the scriptSig, and a scriptSig that lacks the exact expected BIP34 prefix. Header version must be at least 2 and height below 227931. Applicability of the historical rolling-version threshold still requires review. |
 | `bip34_coinbase_height_mismatch` | Both coinbase context fields, decoded height matching the scriptSig, and a scriptSig that lacks the exact expected BIP34 prefix, at height 227931 or later. A non-minimal encoding of the right number also fails the prefix check. |
@@ -240,3 +243,14 @@ Otherwise `ci/prevouts.py` loads every external input's transaction and verifies
 Fees are inputs minus outputs, never an explorer's fee field.
 Missing outputs, repeated spends, money-range violations and negative fees are errors, and a coinbase that pays exactly the subsidy plus fees is not admitted.
 Authenticated bytes establish output values, not historical unspentness, coinbase maturity or script validity; this is not a `ConnectBlock` replay.
+
+## P2SH redeem script evidence
+
+`p2sh_redeem_script_failure` covers a spend of a pay-to-script-hash output that satisfies the pre-BIP16 template check but fails once the redeem script is executed.
+Nodes of 2012 executed redeem scripts for blocks timestamped from 1 April 2012 (Unix time 1333238400), so the record's `nTime` must be at or after that time.
+Bitcoin Core today applies P2SH from genesis, with one historical exception at block 170060 (`script_flag_exceptions` in `src/kernel/chainparams.cpp`), and reports the failure as `block-script-verify-flag-failed` with the script error in parentheses.
+
+`failing_prevout` names the spent output.
+CI finds the one input in the body that spends it, fetches and authenticates the previous transaction through the sigops cache, and evaluates that input twice with python-bitcoinlib: `VerifySignature` binds it to the previous output and runs it with no flags, then `VerifyScript` runs it with `SCRIPT_VERIFY_P2SH`; it must pass the first and fail the second.
+An input that fails without P2SH is an error rather than evidence.
+This evaluates one input with a library interpreter; it is not Bitcoin Core's interpreter and does not validate the other inputs in the block.

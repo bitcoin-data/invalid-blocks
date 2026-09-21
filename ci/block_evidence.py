@@ -1,7 +1,8 @@
 """Read committed transactions for narrow, offline evidence checks.
 
-This is not a consensus validator: no script execution, UTXO lookup or
-historical chain reconstruction takes place here.
+This is not a consensus validator: no UTXO lookup or historical chain
+reconstruction takes place here, and the only script execution is the
+library's evaluation of one named input for the P2SH rule.
 Transaction IDs and the merkle root bind the checked non-witness data to the
 Bitcoin header. Parsing consumes the entire file so truncation cannot satisfy
 a rule's requirement for a complete block body.
@@ -16,7 +17,8 @@ per-input validation budget).
 from collections.abc import Mapping, Sequence
 from typing import TypeVar
 
-from bitcoin.core import COIN, CBlock, CoreMainParams, CTransaction, Hash as sha256d, MoneyRange, b2lx, lx
+from bitcoin.core import COIN, CBlock, CoreMainParams, CTransaction, Hash as sha256d, MoneyRange, ValidationError, b2lx, lx
+from bitcoin.core.scripteval import SCRIPT_VERIFY_P2SH, VerifyScript, VerifySignature
 from bitcoin.core.script import (
     CScript, CScriptInvalidError, CScriptOp, OP_1, OP_16,
     OP_CHECKSIG, OP_CHECKSIGVERIFY, OP_CHECKMULTISIG, OP_CHECKMULTISIGVERIFY,
@@ -113,6 +115,33 @@ def reuses_parent_transaction(block: CBlock, parent_txids: Sequence[str], txid: 
     target = lx(txid)
     return (txid in parent_txids[1:]
             and any(not tx.is_coinbase() and tx.GetTxid() == target for tx in block.vtx[1:]))
+
+
+def spending_input(transactions: Sequence[CTransaction], txid: bytes, vout: int) -> tuple[CTransaction, int]:
+    """Return the one non-coinbase input among these transactions that spends the outpoint."""
+    spends = [(tx, index) for tx in transactions if not tx.is_coinbase()
+              for index, txin in enumerate(tx.vin) if txin.prevout.hash == txid and txin.prevout.n == vout]
+    if len(spends) != 1:
+        raise ValueError(f"outpoint {b2lx(txid)}:{vout} must be spent by exactly one input")
+    return spends[0]
+
+
+def p2sh_spend_fails(tx: CTransaction, index: int, previous: CTransaction) -> bool:
+    """Require the input to pass without P2SH and fail once the redeem script is executed.
+
+    VerifySignature binds the input to the previous transaction's output and
+    evaluates it with no flags; the caller authenticates that transaction by txid.
+    """
+    try:
+        VerifySignature(previous, tx, index)
+    except ValidationError as error:
+        raise ValueError(f"input fails even without P2SH evaluation: {error}") from error
+    script_pubkey = previous.vout[tx.vin[index].prevout.n].scriptPubKey
+    try:
+        VerifyScript(tx.vin[index].scriptSig, script_pubkey, tx, index, flags=(SCRIPT_VERIFY_P2SH,))
+    except ValidationError:
+        return True
+    return False
 
 
 def establishes_rule(block: CBlock, rule: str) -> bool:
