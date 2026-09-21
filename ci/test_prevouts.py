@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 from urllib.error import URLError
 
-from bitcoin.core import CBlock, CBlockHeader, b2lx
+from bitcoin.core import CBlock, CBlockHeader, b2lx, lx
 from block_evidence import read_transaction, sha256d
 from prevouts import (
     PARENT_TXIDS_LIMIT, decode_parent_header, decode_parent_txids, decode_previous,
@@ -20,7 +20,7 @@ from test_block_evidence import transaction
 class PrevoutChecks(unittest.TestCase):
     def setUp(self):
         self.wire, self.stripped = transaction(witness=True)
-        self.txid = sha256d(self.stripped)[::-1].hex()
+        self.txid = b2lx(sha256d(self.stripped))
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.cache = Path(self.temp.name)
@@ -65,7 +65,7 @@ class PrevoutChecks(unittest.TestCase):
             self.assertEqual(path.read_bytes(), self.stripped)
             self.assertEqual(len(list(self.cache.iterdir())), 1)
         with self.subTest(case="cache hit"), patch("prevouts.urlopen", side_effect=AssertionError("network on a cache hit")):
-            self.assertIn(bytes.fromhex(self.txid)[::-1], load_previous(txs, self.cache, fetch=True))
+            self.assertIn(lx(self.txid), load_previous(txs, self.cache, fetch=True))
         path.write_bytes(transaction(amount=2)[1])
         with self.subTest(case="corrupt entry"), self.assertRaisesRegex(ValueError, "identity mismatch"):
             load_previous(txs, self.cache, fetch=True)

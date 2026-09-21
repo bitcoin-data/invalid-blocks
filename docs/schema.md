@@ -223,7 +223,6 @@ The cache stores the header's hex response as `{prev_hash}.header`, the ordered 
 Header downloads are limited to 256 bytes and txid-list downloads to 2 MiB.
 Both cached and downloaded evidence undergo the same checks; missing or corrupt evidence fails validation.
 `--fetch-prevouts` permits downloads, and a warmed cache supports offline checks.
-CI uses a `prevouts-v2-` cache prefix with older `prevouts-v1-` archives retained as a restore fallback, since the new files do not replace the existing evidence formats.
 The cache retention and scheduled-workflow limits described above also apply to these files.
 
 The checker considers only the immediate canonical parent, not older ancestors or the UTXO set, and does not execute scripts or replay historical `ConnectBlock`.
