@@ -12,6 +12,14 @@ The transaction-ordering blocks, 474294, the two coinbase overpayments and the 2
 Replayed today they sit on a branch with less work than the tip, so a node seeing them fresh stores them after the context-free checks and never connects them: `submitblock` returns `inconclusive` and the block becomes a `valid-headers` chain tip.
 A node that already stores them returns `duplicate`, and only a node that attempted the connect at their original tip and marked them failed returns `duplicate-invalid` (the result reported in <https://github.com/bitcoin-data/stale-blocks/pull/11>).
 
+## Pool attributions by address or report
+
+Most `pool` values are coinbase tags.
+The records below attribute a pool another way, and `pool_basis` says which.
+363731 (BTC Nuggets) and 363967 (Bitsolo) are attributed by payout address: 363967's coinbase, recovered from the AuxPoW record in Namecoin block 237930, carries no tag and pays `18zRehBcA2YkYvsC7dfQiFJNyjmWvXsvon`, the address [mining-pools](https://github.com/bitcoin-data/mining-pools/blob/af720b67faa2f157264db33c644eb1b0fa95af5f/pools/bitsolo.json) lists for Bitsolo; 363731 is covered in its own note below.
+474294 and 477115 are attributed to 1Hash from the [BitcoinTalk thread](https://bitcointalk.org/index.php?topic=2041607.0) of July 2017 that discussed both blocks; their coinbases carry `/NYA/` and no pool tag.
+226845, 226895 and 226912 are attributed to mmpool, Chris Double's [Bitparking merged-mining pool](https://bitcointalk.org/index.php?topic=57148.0) at mmpool.bitparking.com, from his [20 March 2013 post](https://bitcointalk.org/index.php?topic=57148.msg1646921#msg1646921) in that thread reporting three invalidated blocks that day, and the [bitcoin-dev log](https://buildingbitcoin.org/bitcoin-dev/log-2013-03-20.html) of the same day, where he reports the `block height mismatch in coinbase` rejection and names 226845; the later 367047 carries the `mmpool` tag itself.
+
 ## Incident notes
 
 ### 507514, 509557, 515319 and 534339 - AntPool parent-transaction reuse (2018)
