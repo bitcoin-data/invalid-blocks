@@ -34,7 +34,7 @@ BLOCKS_DIR = Path("blocks")
 REQUIRED = {"height", "hash", "header", "prev_hash", "nTime", "core_reject_reason", "rule"}
 CONTEXT_FIELDS = {
     "expected_nbits", "parent_mtp", "coinbase_height", "coinbase_scriptsig_hex",
-    "pool", "parent_kind", "missing_prevout",
+    "pool", "pool_basis", "parent_kind", "missing_prevout",
 }
 OUTPOINT = re.compile(r"[0-9a-f]{64}:(?:0|[1-9][0-9]*)")
 OBSERVATION_REQUIRED = {"channel", "source", "provenance"}
@@ -42,6 +42,7 @@ CHILD_FIELDS = {"child_chain", "child_height", "child_block_hash", "child_block_
 OBSERVATION_FIELDS = OBSERVATION_REQUIRED | CHILD_FIELDS | {"first_seen"}
 CHANNELS = {"merge_mining", "p2p", "scrape"}
 PARENT_KINDS = {"canonical", "stale", "invalid"}
+POOL_BASES = {"tag", "reported", "address"}
 POW_LIMIT = 0xFFFF << (8 * (0x1D - 3))
 
 # Evidence paths: local = header/context only; body = complete block file;
@@ -163,6 +164,12 @@ def check_context(record: dict[str, Any]) -> None:
             hex_value(details, name, size)
     if "pool" in details:
         string(details, "pool")
+        if "pool_basis" not in details:
+            raise ValueError("pool requires pool_basis")
+        if details["pool_basis"] not in tuple(POOL_BASES):
+            raise ValueError(f"pool_basis must be one of {sorted(POOL_BASES)}")
+    elif "pool_basis" in details:
+        raise ValueError("pool_basis requires pool")
     if "missing_prevout" in details and not (
             isinstance(details["missing_prevout"], str) and OUTPOINT.fullmatch(details["missing_prevout"])):
         raise ValueError("missing_prevout must be txid:vout in lowercase hex")

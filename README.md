@@ -24,7 +24,7 @@ The header must meet the PoW target encoded in its `nBits`.
 
 Include `context` fields needed to establish the failure: BIP34 coinbase height and scriptSig, `parent_mtp` for `time_below_mtp`, or `expected_nbits` for `nbits_retarget_not_applied`.
 Omit unknown optional fields.
-The related [mining-pools](https://github.com/bitcoin-data/mining-pools) dataset may help identify a coinbase tag.
+When the pool is known, give `pool` with `pool_basis`: `tag` for a coinbase tag, `address` for a payout address listed in [mining-pools](https://github.com/bitcoin-data/mining-pools), or `reported` when only a contemporaneous report names the pool.
 
 Include all available `observations`, with a source and provenance URL for each.
 Distinct child-chain blocks and independent observers remain separate observations.

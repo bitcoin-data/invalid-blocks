@@ -57,7 +57,8 @@ class DatasetChecks(unittest.TestCase):
             self.assertEqual(CHECK.sigop_cost(block, previous), costs)
 
     def test_invalid_record_fields(self):
-        """Reject malformed fields, mismatched headers, unknown rules and wrong reject strings."""
+        """Reject malformed fields, mismatched headers, unknown rules, wrong reject strings and unexplained pool attributions."""
+        context = self.record["context"]
         cases = (
             ("height boolean", "height", True, "height must be an integer"),
             ("uppercase hex", "hash", self.record["hash"].upper(), "lowercase hex"),
@@ -66,6 +67,9 @@ class DatasetChecks(unittest.TestCase):
             ("header mismatch", "header", "00" + self.record["header"][2:], "header hash mismatch"),
             ("unknown rule", "rule", "invented_rule", "unknown rule"),
             ("reject mismatch", "core_reject_reason", "bad-cb-height", "core_reject_reason="),
+            ("pool without basis", "context", dict(context, pool="Example"), "pool requires pool_basis"),
+            ("basis without pool", "context", dict(context, pool_basis="tag"), "pool_basis requires pool"),
+            ("unknown basis", "context", dict(context, pool="Example", pool_basis="guess"), "pool_basis must be one of"),
         )
         for case, field, value, error in cases:
             with self.subTest(case=case), patch.dict(self.record, {field: value}):
