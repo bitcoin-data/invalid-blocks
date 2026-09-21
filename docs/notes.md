@@ -54,9 +54,9 @@ They hold 67, 64, 23 and 14 transactions in 31258, 41258, 7662 and 4855 bytes.
 CI fetches the funding transaction, checks its txid, and evaluates the named input with and without P2SH.
 The blockchain.info block pages archived by the Wayback Machine in April 2012 list each block's transactions.
 The [2 April 2012 bitcoin-dev log](https://buildingbitcoin.org/bitcoin-dev/log-2012-04-02.html) records the first `P2SH VerifySignature failed` rejections and the [4 April log](https://buildingbitcoin.org/bitcoin-dev/log-2012-04-04.html) preserves the transaction.
-Eighty-five further blocks carry the same spend without a complete body; a proof file holds the transaction and the block's ordered txids instead.
-The first three admitted that way are 173886, whose rejection a node log in the [7 April 2012 log](https://buildingbitcoin.org/bitcoin-dev/log-2012-04-07.html) records at 14:58:54 UTC on 1 April; 174772, which the [28 November 2012 log](https://buildingbitcoin.org/bitcoin-dev/log-2012-11-28.html) shows an unpatched node connecting as its best chain; and 189498, the last, reported in the [17 July 2012 log](https://buildingbitcoin.org/bitcoin-dev/log-2012-07-17.html).
-Their txid lists come from the Wayback Machine's April 2012 capture of the blockchain.info block page or from the Decker and Wattenhofer orphan archive preserved in mergedmonitor.
+The other 85 blocks carry the same spend without a complete body and are admitted from proof files holding the transaction and each block's ordered txids.
+Among them are 173886, whose rejection a node log in the [7 April 2012 log](https://buildingbitcoin.org/bitcoin-dev/log-2012-04-07.html) records at 14:58:54 UTC on 1 April; 174772, which the [28 November 2012 log](https://buildingbitcoin.org/bitcoin-dev/log-2012-11-28.html) shows an unpatched node connecting as its best chain; and 189498, the last, reported in the [17 July 2012 log](https://buildingbitcoin.org/bitcoin-dev/log-2012-07-17.html).
+The txid lists come from the Wayback Machine's 2012 captures of the blockchain.info block pages (42 blocks) or from the Decker and Wattenhofer orphan archive preserved in mergedmonitor (43); the [June 2012 capture](https://web.archive.org/web/20120615080519id_/http://blockchain.info:80/tx-index/3618498/4005d6bea3a93fb72f006d23e2685b85069d270cb57d15f0c057ef2d5e3f78d2) of the transaction's own page lists 88 of the 89 blocks.
 
 ### 74638 - value overflow (2010)
 
