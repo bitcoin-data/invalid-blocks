@@ -3,8 +3,8 @@
 This is not a consensus validator: no UTXO lookup or historical chain
 reconstruction takes place here, and the only script execution is the
 library's evaluation of one named input for the P2SH rule.
-Transaction IDs and the merkle root bind the checked non-witness data to the
-Bitcoin header. Parsing consumes the entire file so truncation cannot satisfy
+A block's transaction IDs, or a coinbase's merkle branch, and the merkle root
+bind the checked non-witness data to the Bitcoin header. Parsing consumes the entire file so truncation cannot satisfy
 a rule's requirement for a complete block body.
 
 Sigop counting mirrors Core's CScript::GetSigOpCount, GetTransactionSigOpCost
@@ -134,14 +134,36 @@ def checked_txids(txids: object, header: CBlockHeader) -> list[str]:
     return txids
 
 
+def checked_branch(branch: object) -> list[bytes]:
+    """Require a list of 64-hex sibling hashes, returned in internal byte order; empty for a single-transaction block."""
+    if not isinstance(branch, list) or any(not isinstance(node, str) or not HEX64.fullmatch(node) for node in branch):
+        raise ValueError("merkle_branch must be an array of 64-hex strings")
+    return [lx(node) for node in branch]
+
+
 def read_proof(data: bytes, header: CBlockHeader) -> CTransaction:
-    """Read a transaction and the ordered txid list that places it in the header's block."""
+    """Read one transaction placed in the header's block by a proof file.
+
+    `txids` places any transaction through the block's complete ordered txid
+    list. `merkle_branch` places a coinbase through the sibling hashes from
+    index 0 up to the merkle root, as AuxPoW records carry it; only index 0
+    has an unambiguous path without a position field.
+    """
     proof = json.loads(data)
-    if not isinstance(proof, dict) or set(proof) != {"transaction", "txids"}:
-        raise ValueError("proof must be an object with transaction and txids")
+    if not isinstance(proof, dict) or set(proof) not in ({"transaction", "txids"}, {"transaction", "merkle_branch"}):
+        raise ValueError("proof must be an object with transaction and either txids or merkle_branch")
     tx = read_transaction(bytes.fromhex(proof["transaction"]))
-    if b2lx(tx.GetTxid()) not in checked_txids(proof["txids"], header):
-        raise ValueError("proof transaction is not in the block's txid list")
+    if "txids" in proof:
+        if b2lx(tx.GetTxid()) not in checked_txids(proof["txids"], header):
+            raise ValueError("proof transaction is not in the block's txid list")
+        return tx
+    if not tx.is_coinbase():
+        raise ValueError("merkle_branch proof requires a coinbase transaction")
+    node = tx.GetTxid()
+    for sibling in checked_branch(proof["merkle_branch"]):
+        node = sha256d(node + sibling)
+    if node != header.hashMerkleRoot:
+        raise ValueError("coinbase merkle branch does not reproduce the header's merkle root")
     return tx
 
 

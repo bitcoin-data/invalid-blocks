@@ -1,13 +1,14 @@
 """Block parsing, commitments and sigop counting without mining or API access."""
 
+import json
 import unittest
 
-from bitcoin.core import CBlock, COutPoint, CTransaction, CTxIn, CTxOut, CTxWitness, CTxInWitness, b2lx
+from bitcoin.core import CBlock, CBlockHeader, COutPoint, CTransaction, CTxIn, CTxOut, CTxWitness, CTxInWitness, b2lx
 from bitcoin.core.script import CScript, CScriptWitness, OP_TRUE
 
 from block_evidence import (
     MAX_MONEY, coinbase_amounts, confirmed_at_or_after, establishes_rule, omitted_prevouts, p2sh_spend_fails, read_block,
-    read_transaction, reuses_parent_transaction, sha256d, sigop_count, witness_sigops,
+    read_proof, read_transaction, reuses_parent_transaction, sha256d, sigop_count, witness_sigops,
 )
 
 # The 123-byte spend included by 89 blocks in April to July 2012, and the transaction that funded it.
@@ -36,6 +37,16 @@ def block(*transactions):
     root = CBlock.build_merkle_tree_from_txids([sha256d(stripped) for _, stripped in transactions])[-1]
     # Keep raw transaction bytes so malformed encodings can be supplied by tests.
     return bytes(36) + root + bytes(12) + bytes([len(transactions)]) + b"".join(wire for wire, _ in transactions)
+
+
+def coinbase_branch(txids):
+    """Sibling hashes from the coinbase up to the merkle root, in RPC/display order, from the library's full tree."""
+    tree = CBlock.build_merkle_tree_from_txids(txids)
+    branch, offset, width = [], 0, len(txids)
+    while width > 1:
+        branch.append(b2lx(tree[offset + 1]))
+        offset, width = offset + width, (width + 1) >> 1
+    return branch
 
 
 class BlockEvidenceChecks(unittest.TestCase):
@@ -119,6 +130,25 @@ class BlockEvidenceChecks(unittest.TestCase):
         for name, body, parent, witness, expected in cases:
             with self.subTest(case=name):
                 self.assertEqual(reuses_parent_transaction(body, parent, witness), expected)
+
+    def test_coinbase_branch_proof_places_only_a_coinbase_at_index_zero(self):
+        """A branch of siblings from the coinbase reproduces the root; a wrong sibling or a non-coinbase transaction does not."""
+        coinbase, spend, other = transaction(), transaction(prev_hash=b"\x11" * 32, vout=0), transaction(prev_hash=b"\x22" * 32, vout=0)
+        body = block(coinbase, spend, other)
+        header = CBlockHeader.deserialize(body[:80])
+        branch = coinbase_branch([sha256d(stripped) for _, stripped in (coinbase, spend, other)])
+        proof = {"transaction": coinbase[0].hex(), "merkle_branch": branch}
+        self.assertTrue(read_proof(json.dumps(proof).encode(), header).is_coinbase())
+        with self.subTest(case="single-transaction block"):
+            single = CBlockHeader.deserialize(block(coinbase)[:80])
+            self.assertTrue(read_proof(json.dumps(dict(proof, merkle_branch=[])).encode(), single).is_coinbase())
+        cases = (
+            ("wrong sibling", dict(proof, merkle_branch=branch[::-1]), "does not reproduce"),
+            ("spend with a branch", dict(proof, transaction=spend[0].hex()), "requires a coinbase"),
+        )
+        for case, content, error in cases:
+            with self.subTest(case=case), self.assertRaisesRegex(ValueError, error):
+                read_proof(json.dumps(content).encode(), header)
 
 
 class CoinbaseAmountChecks(unittest.TestCase):

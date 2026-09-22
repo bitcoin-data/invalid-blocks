@@ -308,7 +308,7 @@ def check_local_evidence(record: dict[str, Any], header: CBlockHeader) -> None:
     """Check the named rule against header and context already in the record.
 
     Parent MTP, expected nBits and parent_kind are not looked up on the chain.
-    Without a body, a coinbase scriptSig cannot be bound to the header.
+    Without a body or a coinbase proof, a coinbase scriptSig cannot be bound to the header.
     """
     rule = record["rule"]
     context = record.get("context", {})
@@ -366,7 +366,7 @@ def check_failure_evidence(record: dict[str, Any], block: CBlock | None, prevout
     """Require a checked failure; observations cannot substitute for bytes."""
     mode = RULES[record["rule"]][2]
     if proof is not None and mode != "p2sh":
-        raise ValueError("proof files apply only to the P2SH rule")
+        raise ValueError("spend proofs apply only to the P2SH rule")
     if mode == "local":
         return
     if block is None and proof is None:
@@ -467,7 +467,7 @@ def check_dataset(path: Path | str = DATA_PATH, blocks_dir: Path | str = BLOCKS_
             context_count += bool(record.get("context"))
             observation_count += check_observations(record)
             check_local_evidence(record, parsed_header)
-            evidence_block = None
+            evidence_block = coinbase = proof_transaction = None
             if block is not None:
                 data = block.read_bytes()
                 if data[:80] != header:
@@ -475,15 +475,22 @@ def check_dataset(path: Path | str = DATA_PATH, blocks_dir: Path | str = BLOCKS_
                 evidence_block = read_block(data)
                 if height >= 481824:
                     verify_witness_commitment(evidence_block)
-                details = record.get("context", {})
-                if "coinbase_scriptsig_hex" in details:
-                    if evidence_block.vtx[0].vin[0].scriptSig.hex() != details["coinbase_scriptsig_hex"]:
-                        raise ValueError("coinbase scriptSig does not match context")
-            proof_transaction = None
+                coinbase = evidence_block.vtx[0]
             if proof is not None:
                 if block is not None:
                     raise ValueError("a record has either a block body or a proof file, not both")
+                # A proved coinbase binds the record's coinbase context; a proved
+                # spend is rule evidence and is checked with the failure.
                 proof_transaction = read_proof(proof.read_bytes(), parsed_header)
+                if proof_transaction.is_coinbase():
+                    coinbase = proof_transaction
+                    proof_transaction = None
+                    if "coinbase_scriptsig_hex" not in record.get("context", {}):
+                        raise ValueError("coinbase proof requires coinbase_scriptsig_hex in context")
+            details = record.get("context", {})
+            scriptsig = details.get("coinbase_scriptsig_hex")
+            if coinbase is not None and scriptsig is not None and coinbase.vin[0].scriptSig.hex() != scriptsig:
+                raise ValueError("coinbase scriptSig does not match context")
             check_failure_evidence(record, evidence_block, prevouts_dir, fetch_prevouts, apis, proof_transaction)
         except (OSError, ValueError) as exc:
             problems.append(f"{where}: {exc}")

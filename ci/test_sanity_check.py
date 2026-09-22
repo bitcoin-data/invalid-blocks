@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from bitcoin.core import CBlock, CBlockHeader
 
-from test_block_evidence import P2SH_FUNDING
+from test_block_evidence import P2SH_FUNDING, coinbase_branch
 
 SPEC = importlib.util.spec_from_file_location("sanity_check", Path(__file__).with_name("sanity-check.py"))
 CHECK = importlib.util.module_from_spec(SPEC)
@@ -257,6 +257,26 @@ class DatasetChecks(unittest.TestCase):
             self.copy_evidence(body)
             (self.root / "proofs" / f"{body['height']}-{body['hash']}.json").write_text(json.dumps(proof))
             self.assertTrue(any("not both" in p for p in self.validate([self.record, body])))
+
+    def test_coinbase_proof_binds_context_without_standing_in_for_a_body(self):
+        """A proved coinbase admits a header rule and binds its scriptSig; it is not body evidence."""
+        self.record = self.for_height(363967)
+        self.copy_evidence(self.record, "proof")
+        self.assertEqual(self.validate(), [])
+        # Keep the BIP34 prefix intact so the binding check, not the height decode, reports the difference.
+        altered = self.record["context"]["coinbase_scriptsig_hex"] + "00"
+        with self.subTest(case="wrong scriptSig"), patch.dict(self.record["context"], {"coinbase_scriptsig_hex": altered}):
+            self.assertTrue(any("coinbase scriptSig does not match" in p for p in self.validate()))
+        with self.subTest(case="nothing to bind"):
+            self.record["context"].pop("coinbase_scriptsig_hex")
+            self.assertTrue(any("requires coinbase_scriptsig_hex" in p for p in self.validate()))
+        with self.subTest(case="body rule"):
+            body_rule = self.for_rule("bad-txns-vout-toolarge")
+            block = CBlock.deserialize((CHECK.BLOCKS_DIR / f"{body_rule['height']}-{body_rule['hash']}.bin").read_bytes())
+            proof = {"transaction": block.vtx[0].serialize().hex(),
+                     "merkle_branch": coinbase_branch([tx.GetTxid() for tx in block.vtx])}
+            (self.root / "proofs" / f"{body_rule['height']}-{body_rule['hash']}.json").write_text(json.dumps(proof))
+            self.assertTrue(any("requires a complete block body" in p for p in self.validate([body_rule])))
 
     def test_reported_ledger(self):
         """The real ledger passes; an admitted hash, a header that does not hash to its record, empty sources, disorder and a duplicate are rejected."""
