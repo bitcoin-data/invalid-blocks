@@ -14,8 +14,8 @@ A node that already stores them returns `duplicate`, and only a node that attemp
 
 ## Pool attributions by address or report
 
-Most `pool` values are coinbase tags.
-The records below attribute a pool another way, and `pool_basis` says which.
+Most `pool` values are coinbase tags read from a body or a coinbase proof.
+The records below attribute a pool another way; `pool_basis` says which and `pool_provenance` links the report or the mining-pools listing.
 363731 (BTC Nuggets) and 363967 (Bitsolo) are attributed by payout address: 363967's coinbase, recovered from the AuxPoW record in Namecoin block 237930, carries no tag and pays `18zRehBcA2YkYvsC7dfQiFJNyjmWvXsvon`, the address [mining-pools](https://github.com/bitcoin-data/mining-pools/blob/af720b67faa2f157264db33c644eb1b0fa95af5f/pools/bitsolo.json) lists for Bitsolo; 363731 is covered in its own note below.
 The coinbases of 363967, 946213 and 957780 are authenticated by coinbase proofs built from the AuxPoW records in Namecoin blocks 237930, 821553 and 833329, so the Bitsolo address and the `/F2Pool/` tags are read from transactions the headers commit to.
 The two F2Pool coinbases pay 3.20191623 and 3.14128765 BTC in total, the 3.125 BTC subsidy plus fees, with all but a 546-satoshi output going to `1AfCc4F9c4VTYSE31PUe2kUEKs6ZxiDjxm`.
@@ -87,6 +87,11 @@ The [2 April 2012 bitcoin-dev log](https://buildingbitcoin.org/bitcoin-dev/log-2
 The other 85 blocks carry the same spend without a complete body and are admitted from proof files holding the transaction and each block's ordered txids.
 Among them are 173886, whose rejection a node log in the [7 April 2012 log](https://buildingbitcoin.org/bitcoin-dev/log-2012-04-07.html) records at 14:58:54 UTC on 1 April; 174772, which the [28 November 2012 log](https://buildingbitcoin.org/bitcoin-dev/log-2012-11-28.html) shows an unpatched node connecting as its best chain; and 189498, the last, reported in the [17 July 2012 log](https://buildingbitcoin.org/bitcoin-dev/log-2012-07-17.html).
 The txid lists come from the Wayback Machine's 2012 captures of the blockchain.info block pages (42 blocks) or from the Decker and Wattenhofer orphan archive preserved in mergedmonitor (43); the [June 2012 capture](https://web.archive.org/web/20120615080519id_/http://blockchain.info:80/tx-index/3618498/4005d6bea3a93fb72f006d23e2685b85069d270cb57d15f0c057ef2d5e3f78d2) of the transaction's own page lists 88 of the 89 blocks.
+
+Only three of the 89 are attributed, OzCoin at 173928 and 173957 and NMCbit at 173998, from tags in the reconstructed coinbases; the other 86 carry no `pool` because the search below found nothing, not because none was made.
+The 43 archived block pages show the coinbase payout address as blockchain.info rendered it, which is not authenticated and stays out of `context`.
+Each of those addresses was checked for reuse against every canonical coinbase from height 172000 to 190000 (18001 blocks, 3106 distinct payout addresses, read from a Bitcoin Core node with txindex) and against the mining-pools address and tag lists: 40 are single-use with no match, consistent with the reference client's new key per block, and the remaining 46 blocks have no archived page at all.
+The same pages record the node that first relayed each block to blockchain.info, a pool's node for 24 of them; that says which nodes were still accepting P2SH-invalid blocks in April 2012, not who mined them, and is not part of this dataset.
 
 ### 74638 - value overflow (2010)
 

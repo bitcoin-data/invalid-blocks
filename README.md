@@ -28,6 +28,7 @@ Include `context` fields needed to establish the failure: BIP34 coinbase height 
 When the coinbase comes from an AuxPoW record, add a proof file with the coinbase and its merkle branch so CI can bind the scriptSig to the header.
 Omit unknown optional fields.
 When the pool is known, give `pool` with `pool_basis`: `tag` for a coinbase tag, `address` for a payout address listed in [mining-pools](https://github.com/bitcoin-data/mining-pools), or `reported` when only a contemporaneous report names the pool.
+A tag or address attribution needs a body or a coinbase proof; a report or mining-pools listing goes in `pool_provenance`.
 
 A block whose failure is only reported goes in [`data/reported-blocks.jsonl`](data/reported-blocks.jsonl) with its sources, until the evidence turns up.
 

@@ -38,7 +38,7 @@ REQUIRED = {"height", "hash", "header", "prev_hash", "nTime", "core_reject_reaso
 REPORTED_REQUIRED = {"height", "hash", "reported_failure", "sources"}
 CONTEXT_FIELDS = {
     "expected_nbits", "parent_mtp", "coinbase_height", "coinbase_scriptsig_hex",
-    "pool", "pool_basis", "parent_kind", "missing_prevout", "parent_txid", "failing_prevout",
+    "pool", "pool_basis", "pool_provenance", "parent_kind", "missing_prevout", "parent_txid", "failing_prevout",
 }
 OUTPOINT = re.compile(r"[0-9a-f]{64}:(?:0|[1-9][0-9]*)")
 OBSERVATION_REQUIRED = {"channel", "source", "provenance"}
@@ -228,8 +228,15 @@ def check_context(record: dict[str, Any]) -> None:
             raise ValueError("pool requires pool_basis")
         if details["pool_basis"] not in tuple(POOL_BASES):
             raise ValueError(f"pool_basis must be one of {sorted(POOL_BASES)}")
+        # A report or a mining-pools listing is the attribution's evidence; a tag is read from the coinbase itself.
+        if details["pool_basis"] != "tag" and "pool_provenance" not in details:
+            raise ValueError(f"pool_basis {details['pool_basis']} requires pool_provenance")
+        if "pool_provenance" in details and not http_url(details["pool_provenance"]):
+            raise ValueError("pool_provenance must be an HTTP(S) URL")
     elif "pool_basis" in details:
         raise ValueError("pool_basis requires pool")
+    elif "pool_provenance" in details:
+        raise ValueError("pool_provenance requires pool")
     if "parent_txid" in details:
         hex_value(details, "parent_txid", 32)
     for name in ("missing_prevout", "failing_prevout"):
@@ -491,6 +498,8 @@ def check_dataset(path: Path | str = DATA_PATH, blocks_dir: Path | str = BLOCKS_
             scriptsig = details.get("coinbase_scriptsig_hex")
             if coinbase is not None and scriptsig is not None and coinbase.vin[0].scriptSig.hex() != scriptsig:
                 raise ValueError("coinbase scriptSig does not match context")
+            if details.get("pool_basis") in ("tag", "address") and coinbase is None:
+                raise ValueError(f"pool_basis {details['pool_basis']} requires a body or a coinbase proof")
             check_failure_evidence(record, evidence_block, prevouts_dir, fetch_prevouts, apis, proof_transaction)
         except (OSError, ValueError) as exc:
             problems.append(f"{where}: {exc}")
