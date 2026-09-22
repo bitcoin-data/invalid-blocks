@@ -33,7 +33,9 @@ from prevouts import (
 DATA_PATH = Path("data/invalid-blocks.jsonl")
 BLOCKS_DIR = Path("blocks")
 PROOFS_DIR = Path("proofs")
+REPORTED_PATH = Path("data/reported-blocks.jsonl")
 REQUIRED = {"height", "hash", "header", "prev_hash", "nTime", "core_reject_reason", "rule"}
+REPORTED_REQUIRED = {"height", "hash", "reported_failure", "sources"}
 CONTEXT_FIELDS = {
     "expected_nbits", "parent_mtp", "coinbase_height", "coinbase_scriptsig_hex",
     "pool", "pool_basis", "parent_kind", "missing_prevout", "parent_txid", "failing_prevout",
@@ -160,6 +162,54 @@ def string(record: dict[str, Any], name: str) -> str:
     return value
 
 
+def checked_header(record: dict[str, Any]) -> CBlockHeader:
+    """Decode the 80-byte header and require it to hash to `hash` under a valid target."""
+    header = CBlockHeader.deserialize(hex_value(record, "header", 80))
+    calculated = b2lx(header.GetHash())
+    if record["hash"] != calculated:
+        raise ValueError("header hash mismatch")
+    target = target_from_bits(header.nBits)
+    if not target or int(calculated, 16) > target:
+        raise ValueError("header does not satisfy a valid PoW target")
+    return header
+
+
+def http_url(value: Any) -> bool:
+    """True for a string that parses as an HTTP(S) URL with a host."""
+    url = urlparse(value) if isinstance(value, str) else None
+    return url is not None and url.scheme in ("http", "https") and bool(url.hostname)
+
+
+def check_reported(path: Path | str, established: Set[str]) -> tuple[list[str], int]:
+    """Check the reported-blocks ledger: identity, sources, ordering and no overlap with admitted records."""
+    problems = []
+    seen = set()
+    last_key = None
+    for where, record in read_jsonl(Path(path), problems):
+        try:
+            check_fields(record, REPORTED_REQUIRED, REPORTED_REQUIRED | {"header"})
+            height = integer(record, "height", 1)
+            hex_value(record, "hash", 32)
+            string(record, "reported_failure")
+            sources = record["sources"]
+            if not isinstance(sources, list) or not sources or not all(map(http_url, sources)):
+                raise ValueError("sources must be a nonempty array of HTTP(S) URLs")
+            if "header" in record:
+                checked_header(record)
+            key = (height, record["hash"])
+            if last_key is not None and key < last_key:
+                raise ValueError("records must be ordered by height then hash")
+            last_key = key
+            if record["hash"] in seen:
+                raise ValueError(f"duplicate block hash {record['hash']}")
+            seen.add(record["hash"])
+            if record["hash"] in established:
+                raise ValueError("reported block is already an admitted record")
+        except ValueError as exc:
+            problems.append(f"{where}: {exc}")
+    return problems, len(seen)
+
+
 def check_context(record: dict[str, Any]) -> None:
     """Validate context encoding and the fields required by the rule registry."""
     details = record.get("context", {})
@@ -218,8 +268,7 @@ def check_observations(record: dict[str, Any]) -> int:
             hex_value(observation, "child_block_hash", 32)
         if "child_header" in observation:
             hex_value(observation, "child_header", 80)
-        url = urlparse(observation["provenance"])
-        if url.scheme not in ("http", "https") or not url.hostname:
+        if not http_url(observation["provenance"]):
             raise ValueError("provenance must be an HTTP(S) URL")
         # A chain can commit the same Bitcoin parent at multiple child heights;
         # independent recorders can also observe the same block. Reject only
@@ -374,7 +423,7 @@ def check_failure_evidence(record: dict[str, Any], block: CBlock | None, prevout
 def check_dataset(path: Path | str = DATA_PATH, blocks_dir: Path | str = BLOCKS_DIR,
                   prevouts_dir: Path | str = PREVOUTS_DIR, fetch_prevouts: bool = False,
                   apis: Sequence[str] = DEFAULT_APIS,
-                  proofs_dir: Path | str = PROOFS_DIR) -> tuple[list[str], tuple[int, int, int, int, int]]:
+                  proofs_dir: Path | str = PROOFS_DIR) -> tuple[list[str], set[str], tuple[int, int, int, int]]:
     problems = []
     seen = set()
     remaining = {"block": {path.name: path for path in Path(blocks_dir).glob("*.bin")},
@@ -409,13 +458,7 @@ def check_dataset(path: Path | str = DATA_PATH, blocks_dir: Path | str = BLOCKS_
             if block_hash in seen:
                 raise ValueError(f"duplicate block hash {block_hash}")
             seen.add(block_hash)
-            parsed_header = CBlockHeader.deserialize(header)
-            calculated = b2lx(parsed_header.GetHash())
-            if block_hash != calculated:
-                raise ValueError("header hash mismatch")
-            target = target_from_bits(parsed_header.nBits)
-            if not target or int(calculated, 16) > target:
-                raise ValueError("header does not satisfy a valid PoW target")
+            parsed_header = checked_header(record)
             if record["prev_hash"] != b2lx(parsed_header.hashPrevBlock):
                 raise ValueError("prev_hash mismatch with header")
             if timestamp != parsed_header.nTime:
@@ -447,8 +490,8 @@ def check_dataset(path: Path | str = DATA_PATH, blocks_dir: Path | str = BLOCKS_
     for kind, paths in remaining.items():
         for path in sorted(paths.values()):
             problems.append(f"{path}: orphan {kind} file; name must match a dataset record")
-    return problems, (len(seen), context_count, observation_count,
-                      found["block"] - len(remaining["block"]), found["proof"] - len(remaining["proof"]))
+    return problems, seen, (context_count, observation_count,
+                            found["block"] - len(remaining["block"]), found["proof"] - len(remaining["proof"]))
 
 
 def main() -> int:
@@ -458,14 +501,17 @@ def main() -> int:
     parser.add_argument("--prevouts-dir", type=Path, default=PREVOUTS_DIR, help="verified transaction cache directory")
     parser.add_argument("--api-url", action="append", help="Esplora API base URL; repeat for fallback providers")
     args = parser.parse_args()
-    problems, counts = check_dataset(prevouts_dir=args.prevouts_dir, fetch_prevouts=args.fetch_prevouts,
-                                    apis=args.api_url or DEFAULT_APIS)
+    problems, admitted, counts = check_dataset(prevouts_dir=args.prevouts_dir, fetch_prevouts=args.fetch_prevouts,
+                                              apis=args.api_url or DEFAULT_APIS)
+    reported_problems, reported = check_reported(REPORTED_PATH, admitted)
+    problems += reported_problems
     if problems:
         print("sanity-check failed:")
         print("\n".join(problems))
         return 1
     print("sanity-check successful")
-    print(f"  {counts[0]} blocks, {counts[1]} contexts, {counts[2]} observations, {counts[3]} block files, {counts[4]} proof files")
+    print(f"  {len(admitted)} blocks, {counts[0]} contexts, {counts[1]} observations, {counts[2]} block files, {counts[3]} proof files")
+    print(f"  {reported} reported blocks not admitted")
     return 0
 
 

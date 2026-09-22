@@ -19,6 +19,7 @@ Hex strings are lowercase without `0x`.
 Bitcoin hashes use RPC/display byte order with leading zeros; `header` is the 160-character wire serialization.
 Full blocks, when available, are `blocks/{height}-{hash}.bin`.
 A P2SH record without a body carries `proofs/{height}-{hash}.json` instead.
+Blocks whose failure was reported but never established are listed separately in `data/reported-blocks.jsonl`, described at the end of this document; they are not part of the dataset's admitted records.
 
 ## Required fields
 
@@ -259,3 +260,19 @@ This evaluates one input with a library interpreter; it is not Bitcoin Core's in
 A record without a body may carry `proofs/{height}-{hash}.json`: an object with `transaction`, the hex of the failing transaction, and `txids`, the block's complete ordered transaction IDs.
 The list must reproduce the header's merkle root and contain the transaction's txid, which binds the transaction to the header without its other bodies; the input is then checked exactly as for a body.
 A record has a body or a proof file, not both, and a proof file for any other rule is an error.
+
+## Reported blocks
+
+`data/reported-blocks.jsonl` lists blocks that a contemporary source reported as invalid but whose failure the dataset cannot establish, usually because the header or body is lost.
+They are not admitted records: nothing in the rule tables applies to them, and a body or proof file for one of them is an error until it becomes a record.
+One object per line, sorted by `(height, hash)`, with the same encoding rules as the main file.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `height` | integer | Reported height. |
+| `hash` | string | Reported block hash, the unique key; it must not appear in `data/invalid-blocks.jsonl`. |
+| `header` | string | 80-byte header in hex, when recovered; it must hash to `hash` and meet its own target. |
+| `reported_failure` | string | What the report claims, in a few words. |
+| `sources` | array | HTTP(S) URLs of the reports. |
+
+CI checks these fields, the header when present, the ordering and the overlap; it does not verify the reports.
