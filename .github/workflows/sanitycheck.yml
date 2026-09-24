@@ -13,6 +13,12 @@ on:
 permissions:
   contents: read
 
+# Runs on a branch go one at a time, so an older run on main never deploys over a newer one.
+# A newer push to a pull request cancels its superseded run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   sanity-check:
     runs-on: ubuntu-latest
@@ -29,13 +35,14 @@ jobs:
           path: .cache/prevouts
           key: prevouts-v2-${{ hashFiles('blocks/*.bin', 'proofs/*.json') }}
           restore-keys: prevouts-v2-
-      - name: validate data and test validator
+      - name: validate data, test validator and generate website
         run: |
           python -m venv .venv
           . .venv/bin/activate
           python -m pip install -r requirements.txt
           python ci/sanity-check.py --fetch-prevouts
           python -m unittest discover -s ci -p 'test_*.py'
+          python ci/generate-website.py
       # Save once per block set, after validation and tests pass on the default branch.
       - name: save verified previous transactions
         if: >-
@@ -46,3 +53,23 @@ jobs:
         with:
           path: .cache/prevouts
           key: ${{ steps.prevouts-cache.outputs.cache-primary-key }}
+      # Every validated run uploads the site; only the deploy job publishes it.
+      - name: upload website
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+  deploy-website:
+    needs: sanity-check
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
