@@ -13,7 +13,7 @@ This dataset covers blocks that fail those rules, including failures that can be
 - [`docs/schema.md`](docs/schema.md): fields and admission rules.
 - [`docs/notes.md`](docs/notes.md): replay behaviour and incident notes.
 - `blocks/{height}-{hash}.bin`: full block, when available.
-- `proofs/{height}-{hash}.json`: for a P2SH record without a body, the failing transaction and the block's ordered transaction IDs.
+- `proofs/{height}-{hash}.json`: for a record without a body, one transaction authenticated against the header by the block's ordered transaction IDs or, for a coinbase, by its merkle branch.
 - [`data/reported-blocks.jsonl`](data/reported-blocks.jsonl): blocks reported as invalid whose failure is not established.
 
 Merge-mined recoveries generally provide a header and coinbase rather than a full Bitcoin block.
@@ -25,8 +25,10 @@ Include the 80-byte header, its decoded hash, parent hash and timestamp, height 
 The header must meet the PoW target encoded in its `nBits`.
 
 Include `context` fields needed to establish the failure: BIP34 coinbase height and scriptSig, `parent_mtp` for `time_below_mtp`, or `expected_nbits` for `nbits_retarget_not_applied`.
+When the coinbase comes from an AuxPoW record, add a proof file with the coinbase and its merkle branch so CI can bind the scriptSig to the header.
 Omit unknown optional fields.
 When the pool is known, give `pool` with `pool_basis`: `tag` for a coinbase tag, `address` for a payout address listed in [mining-pools](https://github.com/bitcoin-data/mining-pools), or `reported` when only a contemporaneous report names the pool.
+A tag or address attribution needs a body or a coinbase proof; a report or mining-pools listing goes in `pool_provenance`.
 
 A block whose failure is only reported goes in [`data/reported-blocks.jsonl`](data/reported-blocks.jsonl) with its sources, until the evidence turns up.
 

@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from bitcoin.core import CBlock, CBlockHeader
 
-from test_block_evidence import P2SH_FUNDING
+from test_block_evidence import P2SH_FUNDING, coinbase_branch
 
 SPEC = importlib.util.spec_from_file_location("sanity_check", Path(__file__).with_name("sanity-check.py"))
 CHECK = importlib.util.module_from_spec(SPEC)
@@ -32,6 +32,11 @@ class DatasetChecks(unittest.TestCase):
 
     def for_height(self, height):
         return copy.deepcopy(next(r for r in self.records if r["height"] == height))
+
+    def unattributed(self, record):
+        """Drop the pool attribution so a header-rule record can be checked without its coinbase evidence."""
+        record["context"] = {k: v for k, v in record["context"].items() if not k.startswith("pool")}
+        return record
 
     def copy_evidence(self, record, kind="block"):
         """Copy the record's body (.bin under blocks) or proof (.json under proofs) into the temp tree."""
@@ -76,6 +81,7 @@ class DatasetChecks(unittest.TestCase):
             ("pool without basis", "context", dict(context, pool="Example"), "pool requires pool_basis"),
             ("basis without pool", "context", dict(context, pool_basis="tag"), "pool_basis requires pool"),
             ("unknown basis", "context", dict(context, pool="Example", pool_basis="guess"), "pool_basis must be one of"),
+            ("report without provenance", "context", dict(context, pool="Example", pool_basis="reported"), "requires pool_provenance"),
         )
         for case, field, value, error in cases:
             with self.subTest(case=case), patch.dict(self.record, {field: value}):
@@ -197,7 +203,7 @@ class DatasetChecks(unittest.TestCase):
             if mode == "local":
                 continue
             with self.subTest(rule=rule):
-                self.record = self.for_rule(rule)
+                self.record = self.unattributed(self.for_rule(rule))
                 self.record.pop("observations", None)
                 self.assertTrue(any("complete block body" in p for p in self.validate()))
 
@@ -258,6 +264,28 @@ class DatasetChecks(unittest.TestCase):
             (self.root / "proofs" / f"{body['height']}-{body['hash']}.json").write_text(json.dumps(proof))
             self.assertTrue(any("not both" in p for p in self.validate([self.record, body])))
 
+    def test_coinbase_proof_binds_context_without_standing_in_for_a_body(self):
+        """A proved coinbase admits a header rule and its attribution and binds its scriptSig; it is not body evidence."""
+        self.record = self.for_height(363967)
+        with self.subTest(case="address attribution without coinbase"):
+            self.assertTrue(any("requires a body or a coinbase proof" in p for p in self.validate()))
+        self.copy_evidence(self.record, "proof")
+        self.assertEqual(self.validate(), [])
+        # Keep the BIP34 prefix intact so the binding check, not the height decode, reports the difference.
+        altered = self.record["context"]["coinbase_scriptsig_hex"] + "00"
+        with self.subTest(case="wrong scriptSig"), patch.dict(self.record["context"], {"coinbase_scriptsig_hex": altered}):
+            self.assertTrue(any("coinbase scriptSig does not match" in p for p in self.validate()))
+        with self.subTest(case="nothing to bind"):
+            self.record["context"].pop("coinbase_scriptsig_hex")
+            self.assertTrue(any("requires coinbase_scriptsig_hex" in p for p in self.validate()))
+        with self.subTest(case="body rule"):
+            body_rule = self.for_rule("bad-txns-vout-toolarge")
+            block = CBlock.deserialize((CHECK.BLOCKS_DIR / f"{body_rule['height']}-{body_rule['hash']}.bin").read_bytes())
+            proof = {"transaction": block.vtx[0].serialize().hex(),
+                     "merkle_branch": coinbase_branch([tx.GetTxid() for tx in block.vtx])}
+            (self.root / "proofs" / f"{body_rule['height']}-{body_rule['hash']}.json").write_text(json.dumps(proof))
+            self.assertTrue(any("requires a complete block body" in p for p in self.validate([body_rule])))
+
     def test_reported_ledger(self):
         """The real ledger passes; an admitted hash, a header that does not hash to its record, empty sources, disorder and a duplicate are rejected."""
         rows = [json.loads(line) for line in CHECK.REPORTED_PATH.read_text().splitlines()]
@@ -305,6 +333,7 @@ class DatasetChecks(unittest.TestCase):
     def test_mtp_comparison_includes_equality(self):
         """Timestamp failure includes equality with parent MTP but excludes later timestamps."""
         self.record = self.for_rule("time_below_mtp")
+        self.copy_evidence(self.record, "proof")
         for delta, valid in ((-1, False), (0, True), (1, True)):
             with self.subTest(delta=delta):
                 self.record["context"]["parent_mtp"] = self.record["nTime"] + delta
@@ -325,7 +354,7 @@ class DatasetChecks(unittest.TestCase):
 
     def test_coinbase_length_boundary(self):
         """A 100-byte coinbase scriptSig is insufficient evidence; 101 bytes establishes failure."""
-        self.record = self.for_rule("coinbase_scriptsig_length_above_100")
+        self.record = self.unattributed(self.for_rule("coinbase_scriptsig_length_above_100"))
         self.record["context"].pop("coinbase_height")
         for size, valid in ((100, False), (101, True)):
             self.record["context"]["coinbase_scriptsig_hex"] = "00" * size
@@ -335,16 +364,16 @@ class DatasetChecks(unittest.TestCase):
         """BIP34 evidence must agree with decoded height and demonstrate the claimed prefix failure."""
         for rule in ("bip34_v2_coinbase_height_mismatch", "bip34_coinbase_height_mismatch"):
             with self.subTest(rule=rule):
-                self.record = self.for_rule(rule)
+                self.record = self.unattributed(self.for_rule(rule))
                 self.record["context"]["coinbase_height"] += 1
                 self.assertTrue(any("does not match" in p for p in self.validate()))
                 self.record["context"].update(coinbase_height=self.record["height"],
                     coinbase_scriptsig_hex=CHECK.height_prefix(self.record["height"]).hex())
                 self.assertTrue(any("correct BIP34" in p for p in self.validate()))
-        self.record = self.for_rule("bip34_coinbase_height_missing")
+        self.record = self.unattributed(self.for_rule("bip34_coinbase_height_missing"))
         self.record["context"]["coinbase_scriptsig_hex"] = "0101"
         self.assertTrue(any("no decodable height" in p for p in self.validate()))
-        self.record = self.for_rule("bip34_coinbase_height_mismatch")
+        self.record = self.unattributed(self.for_rule("bip34_coinbase_height_mismatch"))
         prefix = CHECK.height_prefix(self.record["height"])
         self.record["context"].update(coinbase_height=self.record["height"],
             coinbase_scriptsig_hex=(b"\x4c" + prefix).hex())
@@ -353,7 +382,7 @@ class DatasetChecks(unittest.TestCase):
     def test_version_rules_require_activation_and_old_version(self):
         """Reject version-rule claims before activation or with a sufficiently new version."""
         for rule, (activation, version) in CHECK.VERSION_RULES.items():
-            self.record = self.for_rule(rule)
+            self.record = self.unattributed(self.for_rule(rule))
             self.record["height"] = activation - 1
             self.assertTrue(any("requires height" in p for p in self.validate()))
             self.record["height"] = activation

@@ -18,7 +18,7 @@ Omit unknown or inapplicable optional fields instead of writing `null` or empty 
 Hex strings are lowercase without `0x`.
 Bitcoin hashes use RPC/display byte order with leading zeros; `header` is the 160-character wire serialization.
 Full blocks, when available, are `blocks/{height}-{hash}.bin`.
-A P2SH record without a body carries `proofs/{height}-{hash}.json` instead.
+A record without a body may carry `proofs/{height}-{hash}.json`, one transaction authenticated against the header by the block's ordered txids or, for a coinbase, by its merkle branch (see [Proof files](#proof-files)).
 Blocks whose failure was reported but never established are listed separately in `data/reported-blocks.jsonl`, described at the end of this document; they are not part of the dataset's admitted records.
 
 ## Required fields
@@ -44,9 +44,10 @@ Context is shared across observations; adding another witness does not duplicate
 | `expected_nbits` | string | Canonical compact target as eight hex characters. Required for `nbits_retarget_not_applied`. |
 | `parent_mtp` | integer | Parent median-time-past, the median of eleven block timestamps, in Unix seconds. Required for `time_below_mtp`. |
 | `coinbase_height` | integer | Height decoded from the BIP34 scriptSig prefix. Required for a BIP34 height mismatch and `already_confirmed_in_parent`. |
-| `coinbase_scriptsig_hex` | string | Coinbase input scriptSig. Required for BIP34 failures, `coinbase_scriptsig_length_above_100` and `already_confirmed_in_parent`. |
+| `coinbase_scriptsig_hex` | string | Coinbase input scriptSig. Required for BIP34 failures, `coinbase_scriptsig_length_above_100` and `already_confirmed_in_parent`. Checked against the coinbase whenever a body or a coinbase proof is present; otherwise it is an asserted extract. |
 | `pool` | string | Pool the block is attributed to, when known. Requires `pool_basis`. |
-| `pool_basis` | string | How the pool was identified: `tag` when the coinbase scriptSig carries the pool's name or a tag [mining-pools](https://github.com/bitcoin-data/mining-pools) lists for it, `address` when the coinbase payout address is listed for the pool in [mining-pools](https://github.com/bitcoin-data/mining-pools), or `reported` when only a contemporaneous report names the pool. Required whenever `pool` is present and not allowed otherwise. Descriptive: CI checks the value, not the attribution. |
+| `pool_basis` | string | How the pool was identified: `tag` when the coinbase scriptSig carries the pool's name or a tag [mining-pools](https://github.com/bitcoin-data/mining-pools) lists for it, `address` when the coinbase payout address is listed for the pool in [mining-pools](https://github.com/bitcoin-data/mining-pools), or `reported` when only a contemporaneous report names the pool. Required whenever `pool` is present and not allowed otherwise. `tag` and `address` require a body or a coinbase proof (see [Proof files](#proof-files)); CI checks that the evidence exists, not the mapping to the pool name. |
+| `pool_provenance` | string | HTTP(S) URL a reviewer can open to check the attribution: the report for `reported`, the commit-pinned [mining-pools](https://github.com/bitcoin-data/mining-pools) entry for `address`. Required for those two bases, optional for `tag`, and not allowed without `pool`. |
 | `parent_kind` | string | Chain status of the previous block: `canonical`, `stale`, or `invalid`. `invalid` means the previous block is in this dataset. Descriptive, except that the rules which look up the canonical block at the previous height (`missing_unconfirmed_parent`, `already_confirmed_in_parent`) reject any other value. |
 | `missing_prevout` | string | Outpoint as `txid:vout`, spent by a non-coinbase input whose transaction is not in the block. Required for `missing_unconfirmed_parent`. |
 | `parent_txid` | string | Lowercase 64-hex txid of a non-coinbase transaction in both the candidate and its canonical parent. Required for `already_confirmed_in_parent`. |
@@ -152,7 +153,7 @@ At or after mainnet SegWit activation, witness data must match the coinbase witn
 
 The validator also checks JSONL structure, field types, decoded Bitcoin header identity, compact target and PoW, ordering, uniqueness and observation fields.
 Locally checked predicates establish consistency with the supplied context.
-Review must still establish the block height, parent MTP, expected difficulty, historical activation state, chain status where no canonical lookup is required, and the connection between an extracted coinbase script and its header when no complete body is available.
+Review must still establish the block height, parent MTP, expected difficulty, historical activation state, chain status where no canonical lookup is required, and the connection between an extracted coinbase script and its header when neither a complete body nor a coinbase proof is available.
 The retarget check does not reconstruct the previous difficulty or prove that it was reused.
 CI does not execute scripts, validate child-chain commitments, reconstruct historical chain state or fetch observation provenance.
 It verifies the named failures, not every consensus rule or the exact first rejection a historical node would return.
@@ -257,9 +258,20 @@ CI finds the one input that spends it, in the body or in the proof file's transa
 An input that fails without P2SH is an error rather than evidence.
 This evaluates one input with a library interpreter; it is not Bitcoin Core's interpreter and does not validate the other inputs in the block.
 
-A record without a body may carry `proofs/{height}-{hash}.json`: an object with `transaction`, the hex of the failing transaction, and `txids`, the block's complete ordered transaction IDs.
-The list must reproduce the header's merkle root and contain the transaction's txid, which binds the transaction to the header without its other bodies; the input is then checked exactly as for a body.
-A record has a body or a proof file, not both, and a proof file for any other rule is an error.
+A record without a body may carry a proof file holding the failing transaction and the block's ordered txids, described under [Proof files](#proof-files); the input is then checked exactly as for a body.
+
+## Proof files
+
+`proofs/{height}-{hash}.json` authenticates one transaction of a block whose body is not available.
+It is a JSON object with `transaction`, the hex of the transaction, and one placement:
+
+- `txids`, the block's complete ordered transaction IDs, which must reproduce the header's merkle root and contain the transaction's txid. This places any transaction: a P2SH spend admitted without its body, or a coinbase where an archived explorer dump preserved the block's txid list.
+- `merkle_branch`, the sibling hashes from the transaction up to the merkle root in RPC/display byte order, empty for a single-transaction block. Hashing the txid with each sibling in turn must reproduce the header's merkle root. Only index 0 has an unambiguous path without a position field, so this shape requires a coinbase transaction. AuxPoW records carry exactly this branch for the parent coinbase, which is how merge-mined recoveries authenticate a coinbase they never saw in a Bitcoin block.
+
+A proved spend is rule evidence and applies only to `p2sh_redeem_script_failure`.
+A proved coinbase is not rule evidence: body rules still require a body, and a header rule is checked from header and context as before.
+What it adds is binding: the record must carry `coinbase_scriptsig_hex`, and it must equal the proved coinbase's scriptSig, so a BIP34, coinbase-length or attribution claim rests on bytes committed to by the header rather than on an extract copied from a child chain.
+A record has a body or a proof file, not both.
 
 ## Reported blocks
 
