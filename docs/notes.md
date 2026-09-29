@@ -174,3 +174,12 @@ The body is a reconstruction: header and coinbase from the AuxPoW record in Ixco
 Luke-Jr's node log, pasted to bitcoin-dev IRC on [9 September 2012](https://buildingbitcoin.org/bitcoin-dev/log-2012-09-09.html), reports `InvalidChainFound` for this block and three other Eligius blocks, 197701, 197705 and 197883, whose bodies remain missing.
 Core's check then and now is the same subsidy-plus-fees comparison.
 stale-blocks [PR #139](https://github.com/bitcoin-data/stale-blocks/pull/139) added the header as a stale block; it is invalid, not stale, and is removed there once this record is published.
+
+### 232391 - version-1 block after BIP34 (2013)
+
+This version-1 header extends canonical 232390, `000000000000003d8e7a6b81bde8602277a2b4391df530f82cc13139f00ff3ce`, 4460 blocks after the BIP34 activation height of 227931.
+All 1000 canonical blocks from 231391 to 232390 carry version 2 or higher, so the 95% rule that nodes ran in April 2013 rejects it, as current Core's height check does.
+blockchain.info listed it on its [orphaned-blocks page](https://web.archive.org/web/20130501031109/http://blockchain.info/orphaned-blocks) and recorded receiving it at 08:24:51 UTC on 21 April 2013, 89 seconds after its header time.
+The header comes from a [Spanish-locale capture of its block page](https://web.archive.org/web/20130522072930/http://blockchain.info/es/block-index/374061/00000000000001b49fb222941c4fc4866cfe0c96511855e17c00fca3ad8b8cf3), which shows the version, previous hash, merkle root, time, bits and nonce; rebuilt, they hash to the recorded hash.
+The page lists 158 transactions. Every one except the coinbase later confirmed on the canonical chain, and none spends an output that confirmed at or above this height outside the block, so the version is the only failure found; the body and coinbase are not available.
+The block is not in stale-blocks.

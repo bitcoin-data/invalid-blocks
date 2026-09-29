@@ -71,6 +71,7 @@ RULES = {
     "bip34_coinbase_height_mismatch": (
         "bad-cb-height", ("coinbase_height", "coinbase_scriptsig_hex"), "local"),
     "bip34_coinbase_height_missing": ("bad-cb-height", ("coinbase_scriptsig_hex",), "local"),
+    "bip34_block_version_below_2": ("bad-version", (), "local"),
     "bip66_block_version_below_3": ("bad-version", (), "local"),
     "bip65_block_version_below_4": ("bad-version", (), "local"),
     "coinbase_scriptsig_length_above_100": ("bad-cb-length", ("coinbase_scriptsig_hex",), "local"),
@@ -82,7 +83,8 @@ RULES = {
 # BIP34 version-2 enforcement depended on rolling version counts, reviewed in
 # the historical source rather than reconstructed from this dataset.
 BIP34_HEIGHT = 227931
-VERSION_RULES = {"bip66_block_version_below_3": (363725, 3),
+VERSION_RULES = {"bip34_block_version_below_2": (BIP34_HEIGHT, 2),
+                 "bip66_block_version_below_3": (363725, 3),
                  "bip65_block_version_below_4": (388381, 4)}
 
 
@@ -340,7 +342,7 @@ def check_local_evidence(record: dict[str, Any], header: CBlockHeader) -> None:
         activation, minimum = VERSION_RULES[rule]
         if height < activation or version >= minimum:
             raise ValueError(f"{rule} requires height >= {activation} and version < {minimum}")
-    if rule.startswith("bip34_"):
+    elif rule.startswith("bip34_"):
         if rule == "bip34_v2_coinbase_height_mismatch":
             if height >= BIP34_HEIGHT or version < 2:
                 raise ValueError(f"rollout BIP34 rule requires version >= 2 before height {BIP34_HEIGHT}")

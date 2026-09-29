@@ -107,6 +107,7 @@ Core functions live in [bitcoin/bitcoin](https://github.com/bitcoin/bitcoin):
 | `bip34_v2_coinbase_height_mismatch` | `bad-cb-height` | `ContextualCheckBlock` |
 | `bip34_coinbase_height_mismatch` | `bad-cb-height` | `ContextualCheckBlock` |
 | `bip34_coinbase_height_missing` | `bad-cb-height` | `ContextualCheckBlock` |
+| `bip34_block_version_below_2` | `bad-version` | `ContextualCheckBlockHeader` |
 | `bip66_block_version_below_3` | `bad-version` | `ContextualCheckBlockHeader` |
 | `bip65_block_version_below_4` | `bad-version` | `ContextualCheckBlockHeader` |
 | `coinbase_scriptsig_length_above_100` | `bad-cb-length` | `CheckTransaction` |
@@ -120,6 +121,10 @@ When multiple version rules apply, use the most recently activated rule.
 Records at or above full activation, height 227931, use `bip34_coinbase_height_mismatch` or `bip34_coinbase_height_missing`; current Core still enforces that rule.
 Earlier `bip34_v2_coinbase_height_mismatch` records belong to the rollout phase, when the rule applied only to version-2 blocks.
 Their rejection must be checked under the rules nodes of that era ran.
+
+The version half of BIP34 has its own rule: `bip34_block_version_below_2` covers version-1 headers at or above 227931, which fail `bad-version` before the coinbase is checked.
+BIP90 fixed that height where 950 of the previous 1000 main-chain blocks first carried version 2.
+Nodes of that era rejected a version-1 block only while its own previous 1000 blocks kept that majority, so review should confirm it for the record's previous block.
 
 ## Evidence enforced by CI
 
@@ -139,6 +144,7 @@ A provenance URL cannot bypass these requirements.
 | `bip34_v2_coinbase_height_mismatch` | Both coinbase context fields, decoded height matching the scriptSig, and a scriptSig that lacks the exact expected BIP34 prefix. Header version must be at least 2 and height below 227931. Applicability of the historical rolling-version threshold still requires review. |
 | `bip34_coinbase_height_mismatch` | Both coinbase context fields, decoded height matching the scriptSig, and a scriptSig that lacks the exact expected BIP34 prefix, at height 227931 or later. A non-minimal encoding of the right number also fails the prefix check. |
 | `bip34_coinbase_height_missing` | Coinbase scriptSig with no decodable height prefix, at height 227931 or later. |
+| `bip34_block_version_below_2` | Signed header version below 2 at height 227931 or later. |
 | `bip66_block_version_below_3` | Signed header version below 3 at height 363725 or later. |
 | `bip65_block_version_below_4` | Signed header version below 4 at height 388381 or later. |
 | `coinbase_scriptsig_length_above_100` | Supplied coinbase scriptSig exceeds 100 bytes. |
