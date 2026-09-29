@@ -18,6 +18,12 @@ This dataset covers blocks that fail those rules, including failures that can be
 
 Merge-mined recoveries generally provide a header and coinbase rather than a full Bitcoin block.
 
+## Website
+
+[bitcoin-data.github.io/invalid-blocks](https://bitcoin-data.github.io/invalid-blocks/) is generated from this repository and deployed once validation passes on `main`.
+It has a page for each block at `block/{hash}/`, the rendered [notes](docs/notes.md) and the reported blocks.
+`python ci/generate-website.py` writes it to `site/`; CI runs the same command on pull requests, so a change that breaks the site fails before merge.
+
 ## Contributing
 
 Add one record to [`data/invalid-blocks.jsonl`](data/invalid-blocks.jsonl), sorted by height then hash.

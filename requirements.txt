@@ -1,1 +1,2 @@
+Markdown==3.10.3
 python-bitcoinlib==0.12.2
