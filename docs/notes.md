@@ -25,8 +25,9 @@ The two F2Pool coinbases pay 3.20191623 and 3.14128765 BTC in total, the 3.125 B
 ## Coinbase proofs
 
 Merge-mined recoveries supply a header and a coinbase extract, and until the coinbase is placed in the block that extract is only a claim.
-Every record with `coinbase_scriptsig_hex` and no body now has a proof file except 649674: 38 coinbases with their merkle branches from the AuxPoW records in Namecoin blocks, read from a Namecoin Core node by the child block hash in each record's `merge_mining` observation, and 363731's coinbase reserialised from the pinned blockchain.info dump and placed by that dump's 99 txids.
+Every record with `coinbase_scriptsig_hex` and no body now has a proof file except 649674: 37 coinbases with their merkle branches from the AuxPoW records in Namecoin blocks, read from a Namecoin Core node by the child block hash in each record's `merge_mining` observation, and 363731's coinbase reserialised from the pinned blockchain.info dump and placed by that dump's 99 txids.
 CI reproduces each header's merkle root from the proof and requires the context scriptSig to equal the proved one, so every `tag` and `address` attribution in the dataset is read from bytes the header commits to.
+389043 carried the 38th Namecoin proof until [PR #26](https://github.com/bitcoin-data/invalid-blocks/pull/26) supplied its complete block, kept by one of the long-running Chaincode Labs nodes whose stale blocks entered stale-blocks in [PR #156](https://github.com/bitcoin-data/stale-blocks/pull/156); the body replaces the proof.
 
 649674 has no Bitcoin merkle path.
 Its Hathor block carries the coinbase and a twelve-hash path, and that path reproduces the header's merkle root only when the leaf is the double-SHA256 of the coinbase's full witness serialisation rather than its txid: the pool's merged-mining code built the tree from the wrong hash.
