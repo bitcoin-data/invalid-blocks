@@ -42,9 +42,10 @@ The blocks built on 74638 in August 2010 were not preserved, and the [Bitcoin Wi
 
 ## Reported blocks
 
-`data/reported-blocks.jsonl` keeps ten blocks that were reported as invalid but cannot be admitted.
+`data/reported-blocks.jsonl` keeps twelve blocks that were reported as invalid but cannot be admitted.
 Three Eligius blocks of September 2012 were reported as coinbase overpayments alongside the admitted 197438; 197883's header survives but its other transaction and fee do not, and 197701 and 197705 are known only by hash.
 P2Pool's 212048 is known from a December 2012 `InvalidChainFound` report and a node-history dump, without a header or a rejection reason.
+Two version-1 blocks, 227938 and 227939, arrived on 25 March 2013, the day BIP34 made version 2 mandatory; a bitcointalk post and #bitcoin-dev that day give both hashes, and a node's log shows 227938 failing with `rejected nVersion=1 block`, but no header survives.
 Five version-2 hashes from the BIP66 and BIP65 windows come from a March 2017 bitcoin-dev message and still lack headers.
 Bitcoin Unlimited's 450529 has a recovered header and a reported size of 1000023 bytes, but no body bytes to establish it.
 Issues labelled [`reported`](https://github.com/bitcoin-data/invalid-blocks/issues?q=label%3Areported) record what has already been searched for each incident and are the place to bring the missing header or body.
