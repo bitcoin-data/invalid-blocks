@@ -76,6 +76,7 @@ RULES = {
     "coinbase_scriptsig_length_above_100": ("bad-cb-length", ("coinbase_scriptsig_hex",), "local"),
     "time_below_mtp": ("time-too-old", ("parent_mtp",), "local"),
     "nbits_retarget_not_applied": ("bad-diffbits", ("expected_nbits",), "local"),
+    "prev_block_invalid": ("bad-prevblk", ("parent_kind",), "local"),
 }
 # Mainnet activation heights from Core's src/kernel/chainparams.cpp. Earlier
 # BIP34 version-2 enforcement depended on rolling version counts, reviewed in
@@ -353,6 +354,8 @@ def check_local_evidence(record: dict[str, Any], header: CBlockHeader) -> None:
         raise ValueError("P2SH rule requires nTime at or after BIP16 activation")
     if rule == "coinbase_scriptsig_length_above_100" and len(script) <= 100:
         raise ValueError("coinbase scriptSig must exceed 100 bytes")
+    if rule == "prev_block_invalid" and context["parent_kind"] != "invalid":
+        raise ValueError("prev_block_invalid requires parent_kind=invalid")
 
 
 def require_canonical_parent(record: dict[str, Any], prevouts_dir: Path | str, fetch_prevouts: bool,
@@ -432,7 +435,7 @@ def check_dataset(path: Path | str = DATA_PATH, blocks_dir: Path | str = BLOCKS_
                   apis: Sequence[str] = DEFAULT_APIS,
                   proofs_dir: Path | str = PROOFS_DIR) -> tuple[list[str], set[str], tuple[int, int, int, int]]:
     problems = []
-    seen = set()
+    heights = {}
     remaining = {"block": {path.name: path for path in Path(blocks_dir).glob("*.bin")},
                  "proof": {path.name: path for path in Path(proofs_dir).glob("*.json")}}
     found = {kind: len(paths) for kind, paths in remaining.items()}
@@ -462,15 +465,21 @@ def check_dataset(path: Path | str = DATA_PATH, blocks_dir: Path | str = BLOCKS_
             if last_key is not None and key < last_key:
                 raise ValueError("records must be ordered by height then hash")
             last_key = key
-            if block_hash in seen:
+            if block_hash in heights:
                 raise ValueError(f"duplicate block hash {block_hash}")
-            seen.add(block_hash)
+            heights[block_hash] = height
             parsed_header = checked_header(record)
             if record["prev_hash"] != b2lx(parsed_header.hashPrevBlock):
                 raise ValueError("prev_hash mismatch with header")
             if timestamp != parsed_header.nTime:
                 raise ValueError("nTime mismatch with header")
             check_context(record)
+            # Sorting puts an invalid parent, one height below, ahead of its child.
+            parent_height = heights.get(record["prev_hash"])
+            if (record.get("context", {}).get("parent_kind") == "invalid") != (parent_height is not None):
+                raise ValueError("parent_kind=invalid is required exactly when prev_hash is a record in this dataset")
+            if parent_height is not None and parent_height != height - 1:
+                raise ValueError("height must be one above the invalid parent record")
             context_count += bool(record.get("context"))
             observation_count += check_observations(record)
             check_local_evidence(record, parsed_header)
@@ -506,7 +515,7 @@ def check_dataset(path: Path | str = DATA_PATH, blocks_dir: Path | str = BLOCKS_
     for kind, paths in remaining.items():
         for path in sorted(paths.values()):
             problems.append(f"{path}: orphan {kind} file; name must match a dataset record")
-    return problems, seen, (context_count, observation_count,
+    return problems, set(heights), (context_count, observation_count,
                             found["block"] - len(remaining["block"]), found["proof"] - len(remaining["proof"]))
 
 

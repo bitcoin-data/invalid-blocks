@@ -29,6 +29,7 @@ It has a page for each block at `block/{hash}/`, the rendered [notes](docs/notes
 Add one record to [`data/invalid-blocks.jsonl`](data/invalid-blocks.jsonl), sorted by height then hash.
 Include the 80-byte header, its decoded hash, parent hash and timestamp, height `prev + 1`, and a named consensus failure (`core_reject_reason` and `rule`).
 The header must meet the PoW target encoded in its `nBits`.
+A block built on a record fails by ancestry: use `prev_block_invalid` with `parent_kind: invalid`, unless it also fails a rule of its own.
 
 Include `context` fields needed to establish the failure: BIP34 coinbase height and scriptSig, `parent_mtp` for `time_below_mtp`, or `expected_nbits` for `nbits_retarget_not_applied`.
 When the coinbase comes from an AuxPoW record, add a proof file with the coinbase and its merkle branch so CI can bind the scriptSig to the header.

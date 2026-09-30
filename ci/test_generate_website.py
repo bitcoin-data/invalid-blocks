@@ -18,12 +18,14 @@ class WebsiteChecks(unittest.TestCase):
         return next(r for r in self.records if r["height"] == height)
 
     def test_note_links(self):
-        """A record links to the note naming its height or a block with its failing spend; sharing a rule is not enough."""
+        """A record links to the note naming its height, a block with its failing spend or its invalid parent; sharing a rule is not enough."""
         _, _, incidents = SITE.render_notes(SITE.NOTES_PATH.read_text())
         links = SITE.note_links(self.records, incidents)
         cases = [
             ("height in heading", 783426, "F2Pool sigops"),
             ("same failing spend", 174012, "P2SH redeem-script failure"),
+            ("invalid grandparent", 363733, "BIP66 fork trigger"),
+            ("descendant of a spend-linked block", 174165, "P2SH redeem-script failure"),
             ("same rule only", 367047, None),
             ("no note", 331673, None),
         ]

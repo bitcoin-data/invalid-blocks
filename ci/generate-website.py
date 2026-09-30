@@ -139,12 +139,17 @@ def link_heading_heights(body: str, root: str, records: list[dict[str, Any]]) ->
 
 
 def note_links(records: list[dict[str, Any]], incidents: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Map each record hash to the incident note naming its height, or naming a block with the same failing_prevout."""
+    """Map each record hash to the incident note naming its height, naming a block with the same failing_prevout, or linked from its invalid parent."""
     by_height = {height: incident for incident in incidents for height in incident["heights"]}
     links = {r["hash"]: by_height[r["height"]] for r in records if r["height"] in by_height}
     spends = {r["hash"]: r.get("context", {}).get("failing_prevout") for r in records}
     by_spend = {spends[block_hash]: incident for block_hash, incident in links.items() if spends[block_hash]}
-    return {block_hash: by_spend[spend] for block_hash, spend in spends.items() if spend in by_spend} | links
+    links = {block_hash: by_spend[spend] for block_hash, spend in spends.items() if spend in by_spend} | links
+    # Records are sorted by height, so a parent's link is settled before its child's.
+    for record in records:
+        if record["hash"] not in links and record["prev_hash"] in links:
+            links[record["hash"]] = links[record["prev_hash"]]
+    return links
 
 
 # Evidence kinds, in index order, with their index card labels; a kind's badge reads as the name with spaces.

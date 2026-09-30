@@ -34,6 +34,12 @@ Its Hathor block carries the coinbase and a twelve-hash path, and that path repr
 A Bitcoin node given the block would fail `CheckBlock` with `bad-txnmrklroot` before reaching the coinbase-height check the dataset records.
 The scriptSig therefore stays an extract, bound to the header only through that non-standard tree, and the second failure is not registered as a rule.
 
+## Descendants of invalid blocks
+
+A block built on an invalid block fails by ancestry and is recorded under `prev_block_invalid` from its header alone (see the [schema](schema.md#descendants-of-invalid-blocks)).
+The 27 recorded so far extend two incidents: five blocks on 363731 in July 2015, and 22 blocks on 14 of the P2SH blocks in April and May 2012, up to three deep.
+The blocks built on 74638 in August 2010 were not preserved, and the [Bitcoin Wiki](https://web.archive.org/web/20150707030618/https://en.bitcoin.it/wiki/July_2015_Forks) lists two more blocks in the 5 July 2015 fork after reported 363997 that are known only by hash, so none of them can be recorded.
+
 ## Reported blocks
 
 `data/reported-blocks.jsonl` keeps ten blocks that were reported as invalid but cannot be admitted.
@@ -88,6 +94,7 @@ The [2 April 2012 bitcoin-dev log](https://buildingbitcoin.org/bitcoin-dev/log-2
 The other 85 blocks carry the same spend without a complete body and are admitted from proof files holding the transaction and each block's ordered txids.
 Among them are 173886, whose rejection a node log in the [7 April 2012 log](https://buildingbitcoin.org/bitcoin-dev/log-2012-04-07.html) records at 14:58:54 UTC on 1 April; 174772, which the [28 November 2012 log](https://buildingbitcoin.org/bitcoin-dev/log-2012-11-28.html) shows an unpatched node connecting as its best chain; and 189498, the last, reported in the [17 July 2012 log](https://buildingbitcoin.org/bitcoin-dev/log-2012-07-17.html).
 The txid lists come from the Wayback Machine's 2012 captures of the blockchain.info block pages (42 blocks) or from the Decker and Wattenhofer orphan archive preserved in mergedmonitor (43); the [June 2012 capture](https://web.archive.org/web/20120615080519id_/http://blockchain.info:80/tx-index/3618498/4005d6bea3a93fb72f006d23e2685b85069d270cb57d15f0c057ef2d5e3f78d2) of the transaction's own page lists 88 of the 89 blocks.
+Blocks built on 14 of them fail by ancestry: the Decker and Wattenhofer archive holds 22 such headers, and the bitcoincharts node's May 2012 block index holds 21 of them.
 
 Only three of the 89 are attributed, OzCoin at 173928 and 173957 and NMCbit at 173998, from tags in the reconstructed coinbases; the other 86 carry no `pool` because the search below found nothing, not because none was made.
 The 43 archived block pages show the coinbase payout address as blockchain.info rendered it, which is not authenticated and stays out of `context`.
@@ -139,7 +146,7 @@ Contemporaneous discussion is [BitcoinTalk topic 2041607](https://bitcointalk.or
 
 This version-2 header started the 4 July 2015 fork.
 The fixture's other five headers, all version 3, chain from it through 363736; the network reorganized away from them, and the [alert](https://bitcoin.org/en/alert/2015-07-04-spv-mining) that followed asked lightweight-wallet users to wait for extra confirmations.
-Those five descendants fail by ancestry and are not recorded here.
+Those five descendants fail by ancestry and are recorded under `prev_block_invalid`; four of them are committed in Namecoin, Ixcoin or I0coin blocks, and both KIT monitoring nodes received all five on 16 July 2015.
 The 80-byte header comes from a blockchain.info block dump preserved in the [BTC Relay test fixture for this fork](https://github.com/crossclaim/btcrelay-sol/tree/1cf676d387c4514770b91e4ca15094194f446677/test/testdata/old_headers/fork/20150704), which also holds the six raw headers; the same field set survives independently in a [TypeScript port of BTC Relay](https://github.com/adambor/BtcRelay-EVM-TS/blob/8a8c10908655f356f5985d3d8af951f756a92ada/src/test/forkedBlocks.ts).
 The [dump's](https://github.com/crossclaim/btcrelay-sol/blob/1cf676d387c4514770b91e4ca15094194f446677/test/testdata/old_headers/fork/20150704/363731.json) 99 transaction IDs reproduce the header's merkle root, and its coinbase fields reserialize to the first of those IDs, which ties the recorded scriptSig to the header.
 The coinbase pays `1BwZeHJo7b7M2op7VDfYnsmcpXsUYEcVHm`, the address [mining-pools](https://github.com/bitcoin-data/mining-pools/blob/af720b67faa2f157264db33c644eb1b0fa95af5f/pools/btc-nuggets.json) lists for BTC Nuggets; the scriptSig tags are `/P2SH/` and `/stratumPool/`, so the attribution is by address.

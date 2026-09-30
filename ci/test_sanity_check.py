@@ -126,6 +126,26 @@ class DatasetChecks(unittest.TestCase):
                     del self.record["context"][field]
                     self.assertTrue(any("requires" in p for p in self.validate()))
 
+    def test_invalid_parent_is_an_earlier_record(self):
+        """parent_kind=invalid holds exactly when prev_hash is a record one height below, and prev_block_invalid needs it."""
+        parent = self.unattributed(self.for_height(363731))
+        child = self.for_height(363732)
+        unmarked = dict(child, context={"parent_kind": "canonical"})
+        cases = (
+            ("parent present", [parent, child], None),
+            ("parent absent", [child], "required exactly when"),
+            ("parent not marked", [parent, unmarked], "required exactly when"),
+            ("height gap", [parent, dict(child, height=363733)], "one above the invalid parent"),
+            ("no invalid parent", [unmarked], "requires parent_kind=invalid"),
+        )
+        for case, records, error in cases:
+            with self.subTest(case=case):
+                problems = self.validate(records)
+                if error is None:
+                    self.assertEqual(problems, [])
+                else:
+                    self.assertTrue(any(error in p for p in problems))
+
     def test_coinbase_overpayment_evidence(self):
         """Prove 584802 with no previous transactions, then both overpayments from the cached fee evidence."""
         records = {r["height"]: copy.deepcopy(r) for r in self.records if r["rule"] == "bad-cb-amount"}
