@@ -46,12 +46,15 @@ code { background: var(--tint); padding: .1em .35em; border-radius: 4px; }
 .wrap-all { word-break: break-all; }
 
 .card, .panel, .chip, .filter input { background: var(--panel); border: 1px solid var(--border); }
-.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: 1rem; margin: 1.5rem 0 1rem; }
+.cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1rem; margin: 1.5rem 0 1rem; }
 .card, .panel { border-radius: .5rem; padding: 1.1rem 1.25rem; }
 .card { width: 100%; text-align: left; text-decoration: none; }
 .card:hover, .card[aria-pressed="true"], .chip:hover, .chip[aria-pressed="true"] { border-color: var(--edge); }
 .card .k { display: block; color: var(--muted); font-size: 13px; }
 .card .v { display: block; color: var(--strong); font-size: 1.6rem; font-weight: 700; }
+.card.tinted { background: color-mix(in srgb, currentColor 6%, var(--panel)); }
+.card.tinted, .card.tinted:hover, .card.tinted[aria-pressed="true"] { border-left: 3px solid currentColor; }
+.card.reported { border-style: dashed; }
 .panel { margin-bottom: 1rem; }
 .panel h2 { font-size: 1rem; margin: 0 0 .85rem; }
 .panel .lead { color: var(--dim); font-size: 13px; margin: -.4rem 0 .75rem; }
@@ -101,6 +104,7 @@ footer { margin-top: 4rem; padding-top: 1.25rem; border-top: 1px solid var(--bor
 
 @media (max-width: 640px) {
   nav .links { order: 1; flex-basis: 100%; }
+  .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .kv { grid-template-columns: minmax(0, 1fr); }
   .kv dt { margin-top: .35rem; }
   .kv .badge { white-space: normal; word-break: break-all; }
