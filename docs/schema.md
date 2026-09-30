@@ -48,7 +48,7 @@ Context is shared across observations; adding another witness does not duplicate
 | `pool` | string | Pool the block is attributed to, when known. Requires `pool_basis`. |
 | `pool_basis` | string | How the pool was identified: `tag` when the coinbase scriptSig carries the pool's name or a tag [mining-pools](https://github.com/bitcoin-data/mining-pools) lists for it, `address` when the coinbase payout address is listed for the pool in [mining-pools](https://github.com/bitcoin-data/mining-pools), or `reported` when only a contemporaneous report names the pool. Required whenever `pool` is present and not allowed otherwise. `tag` and `address` require a body or a coinbase proof (see [Proof files](#proof-files)); CI checks that the evidence exists, not the mapping to the pool name. |
 | `pool_provenance` | string | HTTP(S) URL a reviewer can open to check the attribution: the report for `reported`, the commit-pinned [mining-pools](https://github.com/bitcoin-data/mining-pools) entry for `address`. Required for those two bases, optional for `tag`, and not allowed without `pool`. |
-| `parent_kind` | string | Chain status of the previous block: `canonical`, `stale`, or `invalid`. `invalid` means the previous block is in this dataset. Descriptive, except that the rules which look up the canonical block at the previous height (`missing_unconfirmed_parent`, `already_confirmed_in_parent`) reject any other value. |
+| `parent_kind` | string | Chain status of the previous block: `canonical`, `stale`, or `invalid`. `invalid` means the previous block is a record in this dataset at height minus one; CI requires it exactly then, and `prev_block_invalid` requires it. `canonical` and `stale` are descriptive, except that the rules which look up the canonical block at the previous height (`missing_unconfirmed_parent`, `already_confirmed_in_parent`) reject any other value. |
 | `missing_prevout` | string | Outpoint as `txid:vout`, spent by a non-coinbase input whose transaction is not in the block. Required for `missing_unconfirmed_parent`. |
 | `parent_txid` | string | Lowercase 64-hex txid of a non-coinbase transaction in both the candidate and its canonical parent. Required for `already_confirmed_in_parent`. |
 | `failing_prevout` | string | Outpoint as `txid:vout`, spent by the input whose P2SH evaluation fails. Required for `p2sh_redeem_script_failure`. |
@@ -89,7 +89,7 @@ Child header hashing and timestamp layouts differ across chains; the generic val
 
 Core functions live in [bitcoin/bitcoin](https://github.com/bitcoin/bitcoin):
 
-- [src/validation.cpp](https://github.com/bitcoin/bitcoin/blob/master/src/validation.cpp): `ConnectBlock`, `ContextualCheckBlock`, `ContextualCheckBlockHeader`
+- [src/validation.cpp](https://github.com/bitcoin/bitcoin/blob/master/src/validation.cpp): `AcceptBlockHeader`, `ConnectBlock`, `ContextualCheckBlock`, `ContextualCheckBlockHeader`
 - [src/consensus/tx_check.cpp](https://github.com/bitcoin/bitcoin/blob/master/src/consensus/tx_check.cpp): `CheckTransaction`
 - [src/consensus/tx_verify.cpp](https://github.com/bitcoin/bitcoin/blob/master/src/consensus/tx_verify.cpp): `CheckTxInputs`, `GetTransactionSigOpCost`
 - [src/script/script.cpp](https://github.com/bitcoin/bitcoin/blob/master/src/script/script.cpp): `GetSigOpCount`
@@ -112,6 +112,7 @@ Core functions live in [bitcoin/bitcoin](https://github.com/bitcoin/bitcoin):
 | `coinbase_scriptsig_length_above_100` | `bad-cb-length` | `CheckTransaction` |
 | `time_below_mtp` | `time-too-old` | `ContextualCheckBlockHeader` |
 | `nbits_retarget_not_applied` | `bad-diffbits` | `ContextualCheckBlockHeader` |
+| `prev_block_invalid` | `bad-prevblk` | `AcceptBlockHeader` |
 
 When multiple version rules apply, use the most recently activated rule.
 
@@ -143,6 +144,7 @@ A provenance URL cannot bypass these requirements.
 | `coinbase_scriptsig_length_above_100` | Supplied coinbase scriptSig exceeds 100 bytes. |
 | `time_below_mtp` | Header timestamp is less than or equal to supplied `parent_mtp`. Equality also fails Core's check. |
 | `nbits_retarget_not_applied` | Height is a multiple of 2016; supplied `expected_nbits` encodes a valid target and differs from the header's nBits. |
+| `prev_block_invalid` | `parent_kind=invalid`: `prev_hash` is a record in this dataset at height minus one. The header alone is the evidence. |
 
 Every available `.bin` must parse completely, match the dataset header and reproduce its transaction merkle root.
 Parsing uses `python-bitcoinlib` without its general consensus-validity checks, because these blocks deliberately violate consensus. Reserializing must reproduce the input bytes exactly; normalized encodings and trailing data are rejected.
@@ -158,6 +160,14 @@ The retarget check does not reconstruct the previous difficulty or prove that it
 CI does not execute scripts, validate child-chain commitments, reconstruct historical chain state or fetch observation provenance.
 It verifies the named failures, not every consensus rule or the exact first rejection a historical node would return.
 Incident background is in [notes.md](notes.md).
+
+## Descendants of invalid blocks
+
+A block that extends an invalid block is invalid too.
+Bitcoin Core has marked the previous block failed, so it rejects the new header with `bad-prevblk` after the proof-of-work check and before any contextual check.
+`prev_block_invalid` records such a block when no failure of its own is established; a block that also fails a rule of its own keeps that rule, as 331674 does on top of 331673.
+The parent must be a record in this dataset, so a chain of descendants is recorded block by block from the first invalid block.
+A descendant of a block in `data/reported-blocks.jsonl` cannot be admitted until its reported ancestor is.
 
 ## Sigops evidence and public APIs
 

@@ -139,12 +139,17 @@ def link_heading_heights(body: str, root: str, records: list[dict[str, Any]]) ->
 
 
 def note_links(records: list[dict[str, Any]], incidents: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Map each record hash to the incident note naming its height, or naming a block with the same failing_prevout."""
+    """Map each record hash to the incident note naming its height, naming a block with the same failing_prevout, or linked from its invalid parent."""
     by_height = {height: incident for incident in incidents for height in incident["heights"]}
     links = {r["hash"]: by_height[r["height"]] for r in records if r["height"] in by_height}
     spends = {r["hash"]: r.get("context", {}).get("failing_prevout") for r in records}
     by_spend = {spends[block_hash]: incident for block_hash, incident in links.items() if spends[block_hash]}
-    return {block_hash: by_spend[spend] for block_hash, spend in spends.items() if spend in by_spend} | links
+    links = {block_hash: by_spend[spend] for block_hash, spend in spends.items() if spend in by_spend} | links
+    # Records are sorted by height, so a parent's link is settled before its child's.
+    for record in records:
+        if record["hash"] not in links and record["prev_hash"] in links:
+            links[record["hash"]] = links[record["prev_hash"]]
+    return links
 
 
 # Evidence kinds, in index order, with their index card labels; a kind's badge reads as the name with spaces.
@@ -235,14 +240,24 @@ def index_page(
 ) -> tuple[str, str]:
     path = "index.html"
     counts = Counter(kind for kind, _ in on_file.values())
-    counts[""] = len(records)
-    cards = "\n".join(
-        f'<button class="card" type="button" data-filter="{kind}"><span class="k">{label}</span><span class="v">{counts[kind]}</span></button>'
-        for kind, label in {"": "invalid blocks", **EVIDENCE_CARDS}.items()
-    )
+    rules = Counter(r["rule"] for r in records)
+    # A card's tone is the badge class it summarises: rule red, or an evidence kind's colour.
+    filter_card = '<button class="card{}" type="button" data-filter="{}"><span class="k">{}</span><span class="v">{}</span></button>'.format
+    link_card = '<a class="card{}" href="{}"><span class="k">{}</span><span class="v">{}</span></a>'.format
+    # Every block on an invalid parent, including 331674, which keeps a rule of its own.
+    ancestry = sum(r.get("context", {}).get("parent_kind") == "invalid" for r in records)
+    # Two rows of four: the blocks, the rules they break, those invalid by ancestry and the reported ones;
+    # then the evidence on file, from a full block down to a header alone.
+    cards = "\n".join([
+        filter_card("", "", "invalid blocks", len(records)),
+        link_card(" tinted rule", f"{BLOB_URL}/docs/schema.md#rules-and-core-reject-strings", "consensus rules", len(rules)),
+        filter_card(" tinted rule", "by-ancestry", "invalid by ancestry", ancestry),
+        link_card(" reported", "reported/", "reported, not established", len(reported)),
+        *(filter_card(f" tinted {kind}", kind, label, counts[kind]) for kind, label in EVIDENCE_CARDS.items()),
+    ])
     chips = "".join(
         f'<button class="chip" type="button" data-filter="{esc(rule)}">{esc(rule)}<b>{count}</b></button>'
-        for rule, count in Counter(r["rule"] for r in records).most_common()
+        for rule, count in rules.most_common()
     )
     attributes = {"height": ' class="num" aria-sort="ascending"', "observations": ' class="num"'}
     headers = "".join(
@@ -252,10 +267,13 @@ def index_page(
     rows = []
     for record in records:
         kind, _ = on_file[record["hash"]]
+        tags = f"{record['rule']} {kind}"
+        if record.get("context", {}).get("parent_kind") == "invalid":
+            tags += " by-ancestry"
         pool = record.get("context", {}).get("pool", "")
         date = utc(record["nTime"], "%Y-%m-%d")
         search = " ".join([str(record["height"]), record["hash"], record["rule"], record["core_reject_reason"], pool, date]).lower()
-        rows.append(f"""<tr data-tags="{esc(record['rule'])} {kind}" data-search="{esc(search)}">
+        rows.append(f"""<tr data-tags="{esc(tags)}" data-search="{esc(search)}">
 <td class="num mono">{record['height']}</td>
 <td class="mono">{date}</td>
 <td class="mono" data-key="{record['hash']}"><a href="{block_href(root_of(path), record['hash'])}" title="{record['hash']}">{record['hash'][:12]}…{record['hash'][-8:]}</a></td>
@@ -274,7 +292,6 @@ The data is in <a href="{BLOB_URL}/data/invalid-blocks.jsonl"><code>data/invalid
 </div>
 <div class="cards">
 {cards}
-<a class="card" href="reported/"><span class="k">reported, not established</span><span class="v">{len(reported)}</span></a>
 </div>
 <h2>Blocks</h2>
 <div id="filters" hidden>
