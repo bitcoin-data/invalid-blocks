@@ -129,7 +129,7 @@ class DatasetChecks(unittest.TestCase):
     def test_invalid_parent_is_an_earlier_record(self):
         """parent_kind=invalid holds exactly when prev_hash is a record one height below, and prev_block_invalid needs it."""
         parent = self.unattributed(self.for_height(363731))
-        child = self.for_height(363732)
+        child = self.unattributed(self.for_height(363732))
         unmarked = dict(child, context={"parent_kind": "canonical"})
         cases = (
             ("parent present", [parent, child], None),
