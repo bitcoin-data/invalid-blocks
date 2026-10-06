@@ -102,9 +102,11 @@ Blocks built on 14 of them fail by ancestry: the Decker and Wattenhofer archive 
 
 Five of the 91 are attributed: OzCoin at 173928 and 173957 and NMCbit at 173998 from tags in the reconstructed coinbases, and BitcoinPool.com at 174174 and 174182 from the pool's own block history (see the pool attributions above); the other 86 carry no `pool` because the search below found nothing, not because none was made.
 None of the 85 coinbases from Luke-Jr's archive carries a tag or payout address that mining-pools lists; 175227 and 180376 carry `eco@msynder`, and 182159 and 183255 `asspennies from assp`.
+Two blocks built on them do: 175849 carries OzCoin's `eco@ozco.in` and 179219 NMCbit's `nmcbit.com`.
 The 43 archived block pages show the coinbase payout address as blockchain.info rendered it, which is not authenticated and stays out of `context`.
 Each of those addresses was checked for reuse against every canonical coinbase from height 172000 to 190000 (18001 blocks, 3106 distinct payout addresses, read from a Bitcoin Core node with txindex) and against the mining-pools address and tag lists: 40 are single-use with no match, consistent with the reference client's new key per block (174174 and 174182 among them, since attributed by report), and 46 other blocks have no archived page at all.
 The same pages record the node that first relayed each block to blockchain.info, a pool's node for 24 of them; that says which nodes were still accepting P2SH-invalid blocks in April 2012, not who mined them, and is not part of this dataset.
+174234 and its descendant 174053 look like P2Pool blocks but carry no `pool`, since mining-pools lists no P2Pool tag or address: their coinbases pay 36 and 58 addresses, and 34 and 49 of those appear in the coinbase of 174118 on its [April 2012 blockchain.info page](https://web.archive.org/web/20120407022206/http://blockchain.info:80/block-index/202724/00000000000004287e442881a06ae18ee02e8e2c60e608faf3e2660f90156eaa), which records that block as relayed by P2Pool.
 
 ### 74638 - value overflow (2010)
 
