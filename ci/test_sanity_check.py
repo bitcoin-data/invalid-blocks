@@ -265,7 +265,7 @@ class DatasetChecks(unittest.TestCase):
 
     def test_p2sh_proof_stands_in_for_a_missing_body(self):
         """Admit a proof-only P2SH record, and reject a proof beside a body, a foreign transaction and a wrong list."""
-        self.record = self.for_height(173886)
+        self.record = self.for_height(173948)
         path = self.copy_evidence(self.record, "proof")
         proof = json.loads(path.read_text())
         self.assertEqual(self.validate(), [])
@@ -279,7 +279,7 @@ class DatasetChecks(unittest.TestCase):
                 self.assertTrue(any(error in p for p in self.validate()))
         path.write_text(json.dumps(proof))
         with self.subTest(case="proof beside body"):
-            body = self.for_height(173928)
+            body = self.for_height(174605)
             self.copy_evidence(body)
             (self.root / "proofs" / f"{body['height']}-{body['hash']}.json").write_text(json.dumps(proof))
             self.assertTrue(any("not both" in p for p in self.validate([self.record, body])))
