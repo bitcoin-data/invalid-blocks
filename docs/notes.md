@@ -8,7 +8,7 @@ Deeper per-block history is documented elsewhere; see the observation `provenanc
 A `.bin` can be replayed with `bitcoin-cli submitblock`, but what comes back depends on where the violation is caught.
 74638 fails the context-free `CheckBlock` checks before anything is stored, so every replay returns `bad-txns-vout-toolarge` on any node.
 Its header alone is valid, though: `submitheader` accepts it (noted in <https://github.com/bitcoin-data/stale-blocks/pull/65>), since every header-level check passes and the violation lives entirely in the body.
-The transaction-ordering blocks, 474294, the two coinbase overpayments and the 2023 sigops blocks fail in `ConnectBlock`, which a node only runs when it is about to extend its active chain with the block.
+The transaction-ordering blocks, 474294, the coinbase overpayments and the 2023 sigops blocks fail in `ConnectBlock`, which a node only runs when it is about to extend its active chain with the block.
 Replayed today they sit on a branch with less work than the tip, so a node seeing them fresh stores them after the context-free checks and never connects them: `submitblock` returns `inconclusive` and the block becomes a `valid-headers` chain tip.
 A node that already stores them returns `duplicate`, and only a node that attempted the connect at their original tip and marked them failed returns `duplicate-invalid` (the result reported in <https://github.com/bitcoin-data/stale-blocks/pull/11>).
 
@@ -160,15 +160,22 @@ The 80-byte header comes from a blockchain.info block dump preserved in the [BTC
 The [dump's](https://github.com/crossclaim/btcrelay-sol/blob/1cf676d387c4514770b91e4ca15094194f446677/test/testdata/old_headers/fork/20150704/363731.json) 99 transaction IDs reproduce the header's merkle root, and its coinbase fields reserialize to the first of those IDs, which ties the recorded scriptSig to the header.
 The coinbase pays `1BwZeHJo7b7M2op7VDfYnsmcpXsUYEcVHm`, the address [mining-pools](https://github.com/bitcoin-data/mining-pools/blob/af720b67faa2f157264db33c644eb1b0fa95af5f/pools/btc-nuggets.json) lists for BTC Nuggets; the scriptSig tags are `/P2SH/` and `/stratumPool/`, so the attribution is by address.
 A [16 March 2017 bitcoin-dev message](https://gnusha.org/pi/bitcoindev/48d3940ab1a2bd53c6e056ce7fbcd361@cock.lu/) lists this hash among blocks a node rejected with `bad-version(0x00000002)`.
-### 584802 - AntPool coinbase overpayment (2019)
+### 494933, 544568 and 584802 - AntPool coinbase overpayment (2017-2019)
 
-The [334-byte body](../blocks/584802-0000000000000000000b47042b90c6a893e6e5cdef70c92beefb88f4c5fa5a69.bin) contains only its coinbase, which pays 1326546691 satoshis against the 1250000000 subsidy: no fees, an excess of 76546691 satoshis (0.76546691 BTC).
-Header hash, proof of work, merkle root, witness commitment and BIP34 height reproduce from the body, and the coinbase carries `Mined by AntPool112`.
-Its parent is canonical 584801, `0000000000000000001b253b1fac766189e15d7f7078191002e5427ac7b8f9f1`, which CI checks against the API's block hash at that height.
+Each body contains only its coinbase, which pays more than the 1250000000-satoshi (12.5 BTC) subsidy at those heights with no transactions and therefore zero fees:
 
-The header entered stale-blocks through the [2022 chainquery.com getchaintips import](https://github.com/bitcoin-data/stale-blocks/commit/97db32bf74481da71d0893ac37152a3a9479424d) and the body in commit `abee96d`, which does not record how it was acquired, so no P2P observation is claimed.
-The binary is preserved byte-for-byte, SHA-256 `08e6fb81bc61db0836d8726f9fe40459fc5a9d3f3e64621a74b21b2af4d48df0`.
-Elastos child 419444 independently witnesses the parent; its Research provenance records acquisition, not the verdict.
+| Height | Date (UTC) | Coinbase value (sat) | Excess above 12.5 BTC subsidy (sat) | Tag | Child witness |
+| --- | --- | ---: | ---: | --- | --- |
+| [494933](../blocks/494933-000000000000000000903fc1c651867a99512af2a9f6a804c31a9382de1fced9.bin) | 2017-11-18 | 2500000000 | 1250000000 | `Mined by AntPoolh` | Namecoin 370986 |
+| [544568](../blocks/544568-000000000000000000253cee00eb8260deac882b2a63855152def7e220d202cd.bin) | 2018-10-06 | 2500000000 | 1250000000 | `Mined by AntPool1M` | Namecoin 420298 |
+| [584802](../blocks/584802-0000000000000000000b47042b90c6a893e6e5cdef70c92beefb88f4c5fa5a69.bin) | 2019-07-10 | 1326546691 | 76546691 | `Mined by AntPool112` | Elastos 419444 |
+
+Header hash, proof of work, merkle root, witness commitment and BIP34 height reproduce from each body.
+CI checks each `prev_hash` against the API's block hash at the previous height (`000000000000000000331e100dfe06e9ef15a7a0140876a52238da8a19e15a07` at 494932, `00000000000000000010158781ca01b5b03ce3252cad3a403d2a7b08609f6adf` at 544567 and `0000000000000000001b253b1fac766189e15d7f7078191002e5427ac7b8f9f1` at 584801).
+
+The 329-byte bodies of 494933 and 544568 are reconstructions from the AuxPoW records in Namecoin blocks 370986 and 420298, surfaced while revisiting [b10c observation 14](https://b10c.me/observations/14-antpool-and-friends-invalid-mining-jobs): each coinbase's txid equals the Bitcoin header's merkle root, so the coinbase is the sole transaction in the block, and its `aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf9` witness commitment output binds the single 32-byte zero witness nonce (`SHA256d(0x00*32 || 0x00*32)`), leaving no unauthenticated byte in the serialized block.
+Both headers entered stale-blocks in [PR #94](https://github.com/bitcoin-data/stale-blocks/pull/94) from the Namecoin AuxPoW recovery; they are invalid, not stale, and are removed there once these records are published.
+The [334-byte body](../blocks/584802-0000000000000000000b47042b90c6a893e6e5cdef70c92beefb88f4c5fa5a69.bin) of 584802 entered stale-blocks in commit `abee96d` after its header arrived through the [2022 chainquery.com getchaintips import](https://github.com/bitcoin-data/stale-blocks/commit/97db32bf74481da71d0893ac37152a3a9479424d), which does not record how the body was acquired, so no P2P observation is claimed; its binary is preserved byte-for-byte, SHA-256 `08e6fb81bc61db0836d8726f9fe40459fc5a9d3f3e64621a74b21b2af4d48df0` (and is byte-identical to the same reconstruction from Elastos child 419444).
 
 ### 197438 - Eligius coinbase overpayment (2012)
 
