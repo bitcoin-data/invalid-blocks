@@ -1,5 +1,7 @@
 # Bitcoin invalid blocks
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24302230.svg)](https://doi.org/10.5281/zenodo.24302230)
+
 Dataset of invalid headers and blocks observed on the Bitcoin network or recovered from other sources, including chains that merge-mine with Bitcoin and archived block explorers.
 Each record has valid proof of work and evidence of a named consensus failure.
 
@@ -23,6 +25,17 @@ Merge-mined recoveries generally provide a header and coinbase rather than a ful
 [bitcoin-data.github.io/invalid-blocks](https://bitcoin-data.github.io/invalid-blocks/) is generated from this repository and deployed once validation passes on `main`.
 It has a page for each block at `block/{hash}/`, the rendered [notes](docs/notes.md) and the reported blocks.
 `python ci/generate-website.py` writes it to `site/`; CI runs the same command on pull requests, so a change that breaks the site fails before merge.
+
+## Archive
+
+Releases of this repository are archived on [Zenodo](https://doi.org/10.5281/zenodo.24302230), which mints a DOI for each of them.
+The DOI above covers all versions and always resolves to the newest one:
+
+> bitcoin-data/invalid-blocks: Dataset of invalid headers and blocks observed on the Bitcoin network or recovered from other sources, including chains that merge-mine with Bitcoin and archived block explorers. https://doi.org/10.5281/zenodo.24302230
+
+Every release also has a version DOI of its own, listed on the Zenodo page.
+Cite that one to point at the exact snapshot of the data that was used.
+The data is public domain (CC0 1.0) and attribution isn't required, but it helps others find the dataset.
 
 ## Contributing
 

@@ -1,8 +1,9 @@
 name: "Nightly release"
 
 # Publishes a GitHub release when main has moved since the last one. Zenodo
-# is hooked up to this repository's releases and archives each one. Nights
-# where nothing was merged don't produce a release.
+# is hooked up to this repository's releases and archives each one, see
+# https://doi.org/10.5281/zenodo.24302230. Nights where nothing was merged don't
+# produce a release.
 
 on:
   workflow_dispatch:
